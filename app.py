@@ -193,4 +193,48 @@ prev_month_str = prev_month_date.strftime('%Y%m')
 with st.form("search_form"):
     col1, col2 = st.columns(2)
     with col1:
-        property_type = st.selectbox("매물 종류", ["아파트", "오피
+        property_type = st.selectbox("매물 종류", ["아파트", "오피스텔", "연립/다세대", "단독/다가구", "상업/업무용", "공장 및 창고", "토지"])
+    with col2:
+        transaction_type = st.selectbox("거래 종류", ["매매", "전월세"])
+        
+    col3, col4, col5, col6 = st.columns(4)
+    with col3:
+        sigungu_name = st.text_input("시/군/구 (예: 서초구)", value="서초구")
+    with col4:
+        dong_name = st.text_input("법정동 (빈칸 시 구 전체 조회)", value="")
+    with col5:
+        start_month = st.text_input("시작 월 (예: 202301)", value=prev_month_str)
+    with col6:
+        end_month = st.text_input("종료 월 (예: 202406)", value=current_month_str)
+        
+    submitted = st.form_submit_button("🔍 전체 기간 조회하기")
+
+if submitted:
+    if not sigungu_name:
+        st.warning("시/군/구 이름은 반드시 입력해주세요.")
+    else:
+        sigungu_code, full_region_name = get_sigungu_code(sigungu_name, dong_name)
+        
+        if sigungu_code:
+            display_dong = dong_name.strip() if dong_name.strip() else "전체"
+            if dong_name.strip() == "":
+                st.success(f"✅ 지역 변환 성공: {sigungu_name} 전체 ({sigungu_code})")
+            else:
+                st.success(f"✅ 지역 변환 성공: {full_region_name} ({sigungu_code})")
+            
+            real_data_df = get_real_estate_data(sigungu_code, start_month, end_month, dong_name, property_type, transaction_type)
+            
+            if not real_data_df.empty:
+                real_data_df.index = range(1, len(real_data_df) + 1)
+                total_count = len(real_data_df)
+                st.subheader(f"📊 {sigungu_name} {display_dong} {property_type} {transaction_type} ({start_month}~{end_month}) - 총 {total_count}건")
+                st.dataframe(real_data_df, use_container_width=True)
+                
+                excel_buffer = BytesIO()
+                with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
+                    real_data_df.to_excel(writer, index=True, index_label='순번', sheet_name='실거래가')
+                
+                st.download_button("📥 엑셀 파일로 다운로드", data=excel_buffer.getvalue(), file_name=f"{sigungu_name}_{display_dong}_{property_type}_{transaction_type}_{start_month}_{end_month}.xlsx")
+        else:
+            search_target = f"{sigungu_name} {dong_name}".strip()
+            st.error(f"'{search_target}'에 해당하는 지역을 찾을 수 없습니다. 오타가 없는지 확인해주세요.")
