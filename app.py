@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import xmltodict
+import time  # 🌟 서버 과부하 방지를 위한 휴식 도구 추가
 from io import BytesIO
 
 # --- 1. API 키 설정 ---
@@ -26,17 +27,12 @@ API_PATHS = {
 # --- 3. 동 이름 -> 시군구 코드 변환 ---
 def get_sigungu_code(sigungu_name, dong_name):
     base_url = "https://apis.data.go.kr/1741000/StanReginCd/getStanReginCdList"
-    
     search_term = dong_name.strip() if dong_name.strip() else sigungu_name.strip()
     url = f"{base_url}?serviceKey={DONG_API_KEY}&pageNo=1&numOfRows=500&type=json&locatadd_nm={search_term}"
     
     try:
         response = requests.get(url)
         if not response.text.strip(): return None, None
-        if response.text.strip().startswith('<'):
-            st.error("🚨 법정동 API 인증 실패!")
-            return None, None
-            
         data = response.json()
         if data.get("StanReginCd"):
             rows = data["StanReginCd"][1]["row"]
@@ -49,7 +45,7 @@ def get_sigungu_code(sigungu_name, dong_name):
     except:
         return None, None
 
-# --- 4. 🌟 실거래가 데이터 가져오는 함수 (소재지 및 평당가격 계산 추가!) ---
+# --- 4. 🌟 실거래가 데이터 가져오는 함수 (에러 완벽 진단 + 숨 고르기 장착!) ---
 def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_type, trans_type):
     dict_key = f"{prop_type}_{trans_type}"
     if dict_key not in API_PATHS:
@@ -78,23 +74,37 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         url = f"{base_url}?serviceKey={MOLIT_API_KEY}&pageNo=1&numOfRows=1000&LAWD_CD={sigungu_code}&DEAL_YMD={target_month}"
         try:
             response = requests.get(url)
+            
+            # 🌟 숨어있는 API 에러(트래픽 초과 등)를 완벽하게 잡아냅니다!
+            if 'OpenAPI_ServiceResponse' in response.text:
+                xml_data = xmltodict.parse(response.content)
+                err_msg = xml_data.get('OpenAPI_ServiceResponse', {}).get('cmmMsgHeader', {}).get('errMsg', '알 수 없는 에러')
+                st.error(f"🚨 공공데이터포털 차단 발생: {err_msg} (일일 조회 한도 초과 또는 서버 불안정일 수 있습니다.)")
+                break # 뒤에 남은 달도 어차피 에러이므로 즉시 조회 중단
+                
             xml_data = xmltodict.parse(response.content)
             result_code = xml_data.get('response', {}).get('header', {}).get('resultCode')
-            if result_code not in ['00', '0', '200', '000']: continue
+            
+            if result_code not in ['00', '0', '200', '000']:
+                continue
                 
             items_dict = xml_data.get('response', {}).get('body', {}).get('items')
             if items_dict and 'item' in items_dict:
                 item_list = items_dict['item']
                 if isinstance(item_list, dict): item_list = [item_list]
                 all_data.append(pd.DataFrame(item_list))
-        except:
+                
+        except Exception as e:
             continue
+            
+        # 🌟 너무 빠른 연속 요청 방지를 위해 0.1초씩 쉬어줍니다.
+        time.sleep(0.1)
             
     status_text.empty()
     progress_bar.empty()
 
     if not all_data:
-        st.warning(f"선택하신 기간({start_month}~{end_month}) 동안 거래된 내역이 없습니다.")
+        st.warning(f"해당 기간 동안 거래된 내역이 없거나, 서버 문제로 조회가 중단되었습니다. (기간을 줄여서 다시 시도해보세요.)")
         return pd.DataFrame()
         
     df = pd.concat(all_data, ignore_index=True)
@@ -106,7 +116,6 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         
     if filtered_df.empty: return pd.DataFrame()
         
-    # 🌟 1. 번역 사전에 '지번(jibun)' 추가
     filtered_df = filtered_df.rename(columns={
         'dealYear': '년', 'dealMonth': '월', 'dealDay': '일', 'umdNm': '법정동', 'jibun': '지번',
         'aptNm': '건물명', 'offiNm': '건물명', 'mviNm': '건물명', 'bldgNm': '건물명', 'rletTypeNm': '건물유형',
@@ -117,7 +126,6 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         'purpsRgnNm': '용도지역', 'reqGbn': '거래유형'
     })
     
-    # 🌟 2. 소재지 만들기 (법정동 + 지번 결합)
     if '법정동' in filtered_df.columns and '지번' in filtered_df.columns:
         filtered_df['지번'] = filtered_df['지번'].fillna('')
         filtered_df['소재지'] = filtered_df['법정동'] + " " + filtered_df['지번'].astype(str)
@@ -128,9 +136,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
     if all(x in filtered_df.columns for x in ['년', '월', '일']):
         filtered_df['계약일'] = filtered_df['년'].astype(str) + "-" + filtered_df['월'].astype(str).str.zfill(2) + "-" + filtered_df['일'].astype(str).str.zfill(2)
     
-    # 🌟 3. 평당 가격 계산기 (매매 거래에만 작동)
     if trans_type == "매매" and '거래금액' in filtered_df.columns:
-        # 매물별로 제공되는 기준 면적을 유동적으로 찾아서 사용합니다.
         area_cols = ['전용면적', '연면적', '거래면적', '대지면적', '계약면적']
         available_area_col = next((col for col in area_cols if col in filtered_df.columns), None)
         
@@ -141,26 +147,19 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
                     area_str = str(row[available_area_col]).replace(',', '').strip()
                     if not price_str or not area_str or price_str == 'nan' or area_str == 'nan':
                         return ""
-                    
-                    price = int(price_str) # 단위: 만원
-                    area = float(area_str) # 단위: ㎡
+                    price = int(price_str) 
+                    area = float(area_str) 
                     if area <= 0: return ""
                     
-                    # 평(3.3058㎡)으로 환산하여 나누기
                     pyeong = area / 3.3058
                     price_per_pyeong = int(price / pyeong)
-                    
-                    # 보기 좋게 한글로 포맷팅 (예: 1억 2000만원, 4500만원)
                     uk, man = price_per_pyeong // 10000, price_per_pyeong % 10000
-                    if uk > 0: 
-                        return f"{uk}억 {man}만원" if man > 0 else f"{uk}억원"
+                    if uk > 0: return f"{uk}억 {man}만원" if man > 0 else f"{uk}억원"
                     return f"{price_per_pyeong}만원"
-                except:
-                    return ""
+                except: return ""
                     
             filtered_df['평당가격'] = filtered_df.apply(calc_pyeong_price, axis=1)
 
-    # 🌟 4. 출력할 컬럼 순서 재배치 (소재지와 평당가격 추가)
     display_cols = ['계약일', '소재지', '건물유형', '건물명', '지목', '용도지역', '건축년도', '대지면적', '연면적', '전용면적', '계약면적', '거래면적', '층', '거래금액', '평당가격', '보증금', '월세', '거래유형']
     final_cols = [c for c in display_cols if c in filtered_df.columns]
     result_df = filtered_df[final_cols].copy()
@@ -187,12 +186,10 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 st.set_page_config(page_title="부동산 실거래가 조회 봇", layout="wide")
 st.title("🏢 올인원 실거래가 조회 봇")
 
-# 🌟 날짜 자동 계산: '현재 달'과 '직전 달'을 각각 계산합니다.
 current_date = pd.Timestamp.now()
-current_month_str = current_date.strftime('%Y%m') # 이번 달 (예: 202602)
-
+current_month_str = current_date.strftime('%Y%m') 
 prev_month_date = current_date - pd.DateOffset(months=1)
-prev_month_str = prev_month_date.strftime('%Y%m') # 지난 달 (예: 202601)
+prev_month_str = prev_month_date.strftime('%Y%m') 
 
 with st.form("search_form"):
     col1, col2 = st.columns(2)
@@ -207,10 +204,8 @@ with st.form("search_form"):
     with col4:
         dong_name = st.text_input("법정동 (빈칸 시 구 전체 조회)", value="")
     with col5:
-        # 🌟 시작 월은 기본값으로 '지난 달'을 표시합니다.
         start_month = st.text_input("시작 월 (예: 202301)", value=prev_month_str)
     with col6:
-        # 🌟 종료 월은 기본값으로 '이번 달'을 표시합니다.
         end_month = st.text_input("종료 월 (예: 202406)", value=current_month_str)
         
     submitted = st.form_submit_button("🔍 전체 기간 조회하기")
@@ -225,7 +220,6 @@ if submitted:
         if sigungu_code:
             display_dong = dong_name.strip() if dong_name.strip() else "전체"
             
-            # 🌟 수정한 부분: 동을 비워뒀으면 '양재동' 대신 '서초구 전체'라고 똑똑하게 표시합니다!
             if dong_name.strip() == "":
                 st.success(f"✅ 지역 변환 성공: {sigungu_name} 전체 ({sigungu_code})")
             else:
