@@ -49,7 +49,7 @@ def get_sigungu_code(sigungu_name, dong_name):
     except:
         return None, None
 
-# --- 4. 실거래가 데이터 가져오는 함수 ---
+# --- 4. 🌟 실거래가 데이터 가져오는 함수 (소재지 및 평당가격 계산 추가!) ---
 def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_type, trans_type):
     dict_key = f"{prop_type}_{trans_type}"
     if dict_key not in API_PATHS:
@@ -106,8 +106,9 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         
     if filtered_df.empty: return pd.DataFrame()
         
+    # 🌟 1. 번역 사전에 '지번(jibun)' 추가
     filtered_df = filtered_df.rename(columns={
-        'dealYear': '년', 'dealMonth': '월', 'dealDay': '일', 'umdNm': '법정동', 
+        'dealYear': '년', 'dealMonth': '월', 'dealDay': '일', 'umdNm': '법정동', 'jibun': '지번',
         'aptNm': '건물명', 'offiNm': '건물명', 'mviNm': '건물명', 'bldgNm': '건물명', 'rletTypeNm': '건물유형',
         'excluUseAr': '전용면적', 'area': '계약면적', 'dealArea': '거래면적', 
         'plArea': '대지면적', 'plottage': '대지면적', 'totArea': '연면적', 
@@ -116,10 +117,51 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         'purpsRgnNm': '용도지역', 'reqGbn': '거래유형'
     })
     
+    # 🌟 2. 소재지 만들기 (법정동 + 지번 결합)
+    if '법정동' in filtered_df.columns and '지번' in filtered_df.columns:
+        filtered_df['지번'] = filtered_df['지번'].fillna('')
+        filtered_df['소재지'] = filtered_df['법정동'] + " " + filtered_df['지번'].astype(str)
+        filtered_df['소재지'] = filtered_df['소재지'].str.strip()
+    elif '법정동' in filtered_df.columns:
+        filtered_df['소재지'] = filtered_df['법정동']
+
     if all(x in filtered_df.columns for x in ['년', '월', '일']):
         filtered_df['계약일'] = filtered_df['년'].astype(str) + "-" + filtered_df['월'].astype(str).str.zfill(2) + "-" + filtered_df['일'].astype(str).str.zfill(2)
     
-    display_cols = ['계약일', '법정동', '건물유형', '건물명', '지목', '용도지역', '건축년도', '대지면적', '연면적', '전용면적', '계약면적', '거래면적', '층', '거래금액', '보증금', '월세', '거래유형']
+    # 🌟 3. 평당 가격 계산기 (매매 거래에만 작동)
+    if trans_type == "매매" and '거래금액' in filtered_df.columns:
+        # 매물별로 제공되는 기준 면적을 유동적으로 찾아서 사용합니다.
+        area_cols = ['전용면적', '연면적', '거래면적', '대지면적', '계약면적']
+        available_area_col = next((col for col in area_cols if col in filtered_df.columns), None)
+        
+        if available_area_col:
+            def calc_pyeong_price(row):
+                try:
+                    price_str = str(row['거래금액']).replace(',', '').strip()
+                    area_str = str(row[available_area_col]).replace(',', '').strip()
+                    if not price_str or not area_str or price_str == 'nan' or area_str == 'nan':
+                        return ""
+                    
+                    price = int(price_str) # 단위: 만원
+                    area = float(area_str) # 단위: ㎡
+                    if area <= 0: return ""
+                    
+                    # 평(3.3058㎡)으로 환산하여 나누기
+                    pyeong = area / 3.3058
+                    price_per_pyeong = int(price / pyeong)
+                    
+                    # 보기 좋게 한글로 포맷팅 (예: 1억 2000만원, 4500만원)
+                    uk, man = price_per_pyeong // 10000, price_per_pyeong % 10000
+                    if uk > 0: 
+                        return f"{uk}억 {man}만원" if man > 0 else f"{uk}억원"
+                    return f"{price_per_pyeong}만원"
+                except:
+                    return ""
+                    
+            filtered_df['평당가격'] = filtered_df.apply(calc_pyeong_price, axis=1)
+
+    # 🌟 4. 출력할 컬럼 순서 재배치 (소재지와 평당가격 추가)
+    display_cols = ['계약일', '소재지', '건물유형', '건물명', '지목', '용도지역', '건축년도', '대지면적', '연면적', '전용면적', '계약면적', '거래면적', '층', '거래금액', '평당가격', '보증금', '월세', '거래유형']
     final_cols = [c for c in display_cols if c in filtered_df.columns]
     result_df = filtered_df[final_cols].copy()
     
@@ -143,7 +185,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 # --- 5. 웹 화면 UI 구성 ---
 st.set_page_config(page_title="부동산 실거래가 조회 봇", layout="wide")
-st.title("🏢 부동산 실거래가 조회 봇")
+st.title("🏢 올인원 실거래가 조회 봇")
 
 # 🌟 날짜 자동 계산: '현재 달'과 '직전 달'을 각각 계산합니다.
 current_date = pd.Timestamp.now()
@@ -206,5 +248,4 @@ if submitted:
                                    file_name=f"{sigungu_name}_{display_dong}_{property_type}_{transaction_type}_{start_month}_{end_month}.xlsx")
         else:
             search_target = f"{sigungu_name} {dong_name}".strip()
-
             st.error(f"'{search_target}'에 해당하는 지역을 찾을 수 없습니다. 오타가 없는지 확인해주세요.")
