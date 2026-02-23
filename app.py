@@ -2,12 +2,12 @@ import streamlit as st
 import pandas as pd
 import requests
 import xmltodict
-import time  
+import time
 from io import BytesIO
 
 # --- 1. API 키 설정 ---
-DONG_API_KEY = "z92CW%2FlIVtpHa46lUJJ5WCMBVQEu8C8YQS9sY2nFsG3nKq0S2J4W997c7ENV6x02Rsnf6RKJcY1hc8cLc2OlxQ%3D%3D"
-MOLIT_API_KEY = "z92CW%2FlIVtpHa46lUJJ5WCMBVQEu8C8YQS9sY2nFsG3nKq0S2J4W997c7ENV6x02Rsnf6RKJcY1hc8cLc2OlxQ%3D%3D"
+DONG_API_KEY = "여기에_법정동_키를_넣으세요"
+MOLIT_API_KEY = "여기에_국토교통부_일반인증키(Encoding)를_넣으세요"
 
 # --- 2. 매물 및 거래 종류별 국토부 API 주소 ---
 API_PATHS = {
@@ -24,6 +24,7 @@ API_PATHS = {
     "토지_매매": "RTMSDataSvcLandTrade/getRTMSDataSvcLandTrade"
 }
 
+# --- 3. 동 이름 -> 시군구 코드 변환 ---
 def get_sigungu_code(sigungu_name, dong_name):
     base_url = "https://apis.data.go.kr/1741000/StanReginCd/getStanReginCdList"
     search_term = dong_name.strip() if dong_name.strip() else sigungu_name.strip()
@@ -44,6 +45,7 @@ def get_sigungu_code(sigungu_name, dong_name):
     except:
         return None, None
 
+# --- 4. 실거래가 데이터 가져오는 함수 ---
 def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_type, trans_type):
     dict_key = f"{prop_type}_{trans_type}"
     if dict_key not in API_PATHS:
@@ -71,23 +73,30 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         
         url = f"{base_url}?serviceKey={MOLIT_API_KEY}&pageNo=1&numOfRows=1000&LAWD_CD={sigungu_code}&DEAL_YMD={target_month}"
         try:
-            response = requests.get(url)
+            response = requests.get(url, timeout=10)
+            content = response.text.strip()
             
-            # 🌟 수정됨: 공공데이터포털 자체 차단 (미승인 키, 트래픽 초과 등)
-            if 'OpenAPI_ServiceResponse' in response.text:
-                xml_data = xmltodict.parse(response.content)
-                err_msg = xml_data.get('OpenAPI_ServiceResponse', {}).get('cmmMsgHeader', {}).get('errMsg', '알 수 없는 에러')
-                st.error(f"🚨 서버 에러 ({target_month}): {err_msg} (해당 매물의 활용신청이 안 되어 있거나 한도 초과입니다.)")
-                break 
+            # 국토부 서버가 정상적인 XML이 아닌 HTML(에러 페이지)을 뱉어낼 때의 방어 코드
+            if content.startswith('<HTML') or content.startswith('<html') or content.startswith('<!DOCTYPE'):
+                st.error(f"🚨 서버 응답 오류 ({target_month}): 국토부 서버가 데이터를 거부했습니다. 활용신청 미승인 또는 점검 중일 수 있습니다.")
+                with st.expander("서버 응답 원본 확인"):
+                    st.text(content[:500])
+                break
                 
             xml_data = xmltodict.parse(response.content)
+            
+            # 인증키 에러 및 트래픽 초과 확인
+            if 'OpenAPI_ServiceResponse' in xml_data:
+                err_msg = xml_data['OpenAPI_ServiceResponse'].get('cmmMsgHeader', {}).get('errMsg', '알 수 없는 에러')
+                st.error(f"🚨 API 서비스 거절 ({target_month}): {err_msg}")
+                break
+            
             header = xml_data.get('response', {}).get('header', {})
             result_code = header.get('resultCode')
-            result_msg = header.get('resultMsg', '에러 메시지 없음')
+            result_msg = header.get('resultMsg', '')
             
-            # 🌟 수정됨: 국토부 서버에서 거절한 경우 명확히 표시
             if result_code not in ['00', '0', '200', '000']:
-                st.error(f"🚨 국토부 거절 ({target_month}): {result_msg} (코드: {result_code})")
+                st.error(f"🚨 국토부 데이터 거절 ({target_month}): {result_msg} (코드: {result_code})")
                 continue
                 
             items_dict = xml_data.get('response', {}).get('body', {}).get('items')
@@ -97,20 +106,25 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
                 all_data.append(pd.DataFrame(item_list))
                 
         except Exception as e:
-            st.error(f"🚨 데이터 처리 중 에러 발생: {e}")
+            st.error(f"🚨 데이터 처리 중 오류가 발생했습니다. ({target_month})")
+            with st.expander("오류 상세 내용"):
+                st.text(str(e))
+                if 'response' in locals():
+                    st.text(response.text[:500])
             continue
             
-        time.sleep(0.1)
+        time.sleep(0.1) # 서버 과부하 방지
             
     status_text.empty()
     progress_bar.empty()
 
     if not all_data:
-        st.warning(f"선택하신 기간 동안 거래된 내역이 없거나, 서버 문제로 조회가 중단되었습니다. 위에 뜬 빨간색 에러 메시지를 확인해주세요.")
+        st.warning("선택하신 기간 동안 거래된 내역이 없거나, 권한 문제로 조회가 중단되었습니다.")
         return pd.DataFrame()
         
     df = pd.concat(all_data, ignore_index=True)
     
+    # 동 이름 입력 여부에 따른 필터링
     if dong_name.strip():
         filtered_df = df[df['umdNm'].str.contains(dong_name.strip(), na=False)]
     else:
@@ -118,6 +132,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         
     if filtered_df.empty: return pd.DataFrame()
         
+    # 컬럼명 한글 변환
     filtered_df = filtered_df.rename(columns={
         'dealYear': '년', 'dealMonth': '월', 'dealDay': '일', 'umdNm': '법정동', 'jibun': '지번',
         'aptNm': '건물명', 'offiNm': '건물명', 'mviNm': '건물명', 'bldgNm': '건물명', 'rletTypeNm': '건물유형',
@@ -128,6 +143,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         'purpsRgnNm': '용도지역', 'reqGbn': '거래유형'
     })
     
+    # 소재지 병합 (법정동 + 지번)
     if '법정동' in filtered_df.columns and '지번' in filtered_df.columns:
         filtered_df['지번'] = filtered_df['지번'].fillna('')
         filtered_df['소재지'] = filtered_df['법정동'] + " " + filtered_df['지번'].astype(str)
@@ -135,9 +151,11 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
     elif '법정동' in filtered_df.columns:
         filtered_df['소재지'] = filtered_df['법정동']
 
+    # 계약일 병합
     if all(x in filtered_df.columns for x in ['년', '월', '일']):
         filtered_df['계약일'] = filtered_df['년'].astype(str) + "-" + filtered_df['월'].astype(str).str.zfill(2) + "-" + filtered_df['일'].astype(str).str.zfill(2)
     
+    # 평당가격 계산 로직
     if trans_type == "매매" and '거래금액' in filtered_df.columns:
         area_cols = ['전용면적', '연면적', '거래면적', '대지면적', '계약면적']
         available_area_col = next((col for col in area_cols if col in filtered_df.columns), None)
@@ -160,10 +178,12 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
                 except: return ""
             filtered_df['평당가격'] = filtered_df.apply(calc_pyeong_price, axis=1)
 
+    # 최종 출력할 컬럼 순서 정리
     display_cols = ['계약일', '소재지', '건물유형', '건물명', '지목', '용도지역', '건축년도', '대지면적', '연면적', '전용면적', '계약면적', '거래면적', '층', '거래금액', '평당가격', '보증금', '월세', '거래유형']
     final_cols = [c for c in display_cols if c in filtered_df.columns]
     result_df = filtered_df[final_cols].copy()
     
+    # 금액 포맷팅 (만원 -> 억 만원)
     def format_money(price_str):
         if pd.isna(price_str): return ""
         try:
@@ -182,9 +202,11 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         
     return result_df
 
+# --- 5. 웹 화면 UI 구성 ---
 st.set_page_config(page_title="부동산 실거래가 조회 봇", layout="wide")
 st.title("🏢 올인원 실거래가 조회 봇")
 
+# 시작/종료 월 기본값 세팅
 current_date = pd.Timestamp.now()
 current_month_str = current_date.strftime('%Y%m') 
 prev_month_date = current_date - pd.DateOffset(months=1)
@@ -209,6 +231,7 @@ with st.form("search_form"):
         
     submitted = st.form_submit_button("🔍 전체 기간 조회하기")
 
+# --- 6. 조회 버튼 클릭 시 동작 ---
 if submitted:
     if not sigungu_name:
         st.warning("시/군/구 이름은 반드시 입력해주세요.")
