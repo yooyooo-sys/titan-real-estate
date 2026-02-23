@@ -13,6 +13,7 @@ MOLIT_API_KEY = "z92CW%2FlIVtpHa46lUJJ5WCMBVQEu8C8YQS9sY2nFsG3nKq0S2J4W997c7ENV6
 API_PATHS = {
     "아파트_매매": "RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev",
     "아파트_전월세": "RTMSDataSvcAptRent/getRTMSDataSvcAptRent",
+    "아파트 분양권_매매": "RTMSDataSvcSilvTrade/getRTMSDataSvcSilvTrade",  # 🌟 아파트분양권 추가!
     "오피스텔_매매": "RTMSDataSvcOffiTrade/getRTMSDataSvcOffiTrade",
     "오피스텔_전월세": "RTMSDataSvcOffiRent/getRTMSDataSvcOffiRent",
     "연립/다세대_매매": "RTMSDataSvcRHTrade/getRTMSDataSvcRHTrade",
@@ -45,11 +46,11 @@ def get_sigungu_code(sigungu_name, dong_name):
     except:
         return None, None
 
-# --- 4. 실거래가 데이터 가져오는 함수 (방화벽 우회 위장술 장착!) ---
+# --- 4. 실거래가 데이터 가져오는 함수 ---
 def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_type, trans_type):
     dict_key = f"{prop_type}_{trans_type}"
     if dict_key not in API_PATHS:
-        st.warning(f"⚠️ '{prop_type} {trans_type}' 조합은 공공데이터포털에서 제공하지 않습니다.")
+        st.warning(f"⚠️ '{prop_type} {trans_type}' 조합은 공공데이터포털에서 제공하지 않거나 불가능한 거래입니다. (예: 분양권 전월세 등)")
         return pd.DataFrame()
         
     api_path = API_PATHS[dict_key]
@@ -67,7 +68,6 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
     progress_bar = st.progress(0)
     status_text = st.empty()
 
-    # 🌟 핵심: 방화벽 우회를 위한 크롬 브라우저 신분증(Headers)
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
@@ -78,19 +78,18 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         
         url = f"{base_url}?serviceKey={MOLIT_API_KEY}&pageNo=1&numOfRows=1000&LAWD_CD={sigungu_code}&DEAL_YMD={target_month}"
         try:
-            # 🌟 신분증을 함께 제출합니다.
             response = requests.get(url, headers=headers, timeout=15)
             content = response.text.strip()
             
             if not content.startswith('<'):
-                st.error(f"🚨 국토부 서버 차단 ({target_month}): 국가 방화벽이 접속을 차단했거나 서버가 다운되었습니다. 잠시 후 다시 시도해주세요.")
+                st.error(f"🚨 국토부 서버 차단 ({target_month}): {content} (활용신청 동기화가 진행 중이거나 국가 방화벽이 일시적으로 접속을 차단했습니다.)")
                 break
                 
             xml_data = xmltodict.parse(response.content)
             
             if 'OpenAPI_ServiceResponse' in xml_data:
                 err_msg = xml_data['OpenAPI_ServiceResponse'].get('cmmMsgHeader', {}).get('errMsg', '알 수 없는 에러')
-                st.error(f"🚨 API 서비스 거절 ({target_month}): {err_msg}")
+                st.error(f"🚨 API 서비스 거절 ({target_month}): {err_msg} (아직 해당 매물의 승인 내역이 국토부 서버에 연동되지 않았습니다.)")
                 break
             
             header = xml_data.get('response', {}).get('header', {})
@@ -111,7 +110,6 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
             st.error(f"🚨 데이터 처리 중 오류가 발생했습니다. ({target_month})")
             continue
             
-        # 🌟 방화벽 자극을 피하기 위해 쉬는 시간을 0.3초로 늘립니다.
         time.sleep(0.3)
             
     status_text.empty()
@@ -132,8 +130,8 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         
     filtered_df = filtered_df.rename(columns={
         'dealYear': '년', 'dealMonth': '월', 'dealDay': '일', 'umdNm': '법정동', 'jibun': '지번',
-        'aptNm': '건물명', 'offiNm': '건물명', 'mviNm': '건물명', 'bldgNm': '건물명', 'rletTypeNm': '건물유형',
-        'excluUseAr': '전용면적', 'area': '계약면적', 'dealArea': '거래면적', 
+        'aptNm': '건물명', 'offiNm': '건물명', 'mviNm': '건물명', 'bldgNm': '건물명', '단지': '건물명', # 🌟 분양권 데이터도 유연하게 대응
+        'rletTypeNm': '건물유형', 'excluUseAr': '전용면적', 'area': '계약면적', 'dealArea': '거래면적', 
         'plArea': '대지면적', 'plottage': '대지면적', 'totArea': '연면적', 
         'dealAmount': '거래금액', 'deposit': '보증금', 'monthlyRent': '월세', 
         'floor': '층', 'jimok': '지목', 'buildYear': '건축년도', 
@@ -198,7 +196,6 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 st.set_page_config(page_title="부동산 실거래가 조회 봇", layout="wide")
 st.title("🏢 올인원 실거래가 조회 봇")
 
-# 시작/종료 월 기본값 세팅
 current_date = pd.Timestamp.now()
 current_month_str = current_date.strftime('%Y%m') 
 prev_month_date = current_date - pd.DateOffset(months=1)
@@ -207,7 +204,8 @@ prev_month_str = prev_month_date.strftime('%Y%m')
 with st.form("search_form"):
     col1, col2 = st.columns(2)
     with col1:
-        property_type = st.selectbox("매물 종류", ["아파트", "오피스텔", "연립/다세대", "단독/다가구", "상업/업무용", "공장 및 창고", "토지"])
+        # 🌟 아파트 밑에 '아파트분양권' 옵션 추가 완료!
+        property_type = st.selectbox("매물 종류", ["아파트", "아파트분양권", "오피스텔", "연립/다세대", "단독/다가구", "상업/업무용", "공장 및 창고", "토지"])
     with col2:
         transaction_type = st.selectbox("거래 종류", ["매매", "전월세"])
         
