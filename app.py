@@ -20,7 +20,7 @@ API_PATHS = {
     "단독/다가구_매매": "RTMSDataSvcSHTrade/getRTMSDataSvcSHTrade",
     "단독/다가구_전월세": "RTMSDataSvcSHRent/getRTMSDataSvcSHRent",
     "상업/업무용_매매": "RTMSDataSvcNrgTrade/getRTMSDataSvcNrgTrade",
-    "공장 및 창고_매매": "RTMSDataSvcFctryTrade/getRTMSDataSvcFctryTrade",
+    "공장 및 창고_매매": "RTMSDataSvcInduTrade/getRTMSDataSvcInduTrade", 
     "토지_매매": "RTMSDataSvcLandTrade/getRTMSDataSvcLandTrade"
 }
 
