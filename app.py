@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import xmltodict
-import time  # 🌟 서버 과부하 방지를 위한 휴식 도구 추가
+import time  
 from io import BytesIO
 
 # --- 1. API 키 설정 ---
@@ -24,7 +24,6 @@ API_PATHS = {
     "토지_매매": "RTMSDataSvcLandTrade/getRTMSDataSvcLandTrade"
 }
 
-# --- 3. 동 이름 -> 시군구 코드 변환 ---
 def get_sigungu_code(sigungu_name, dong_name):
     base_url = "https://apis.data.go.kr/1741000/StanReginCd/getStanReginCdList"
     search_term = dong_name.strip() if dong_name.strip() else sigungu_name.strip()
@@ -45,7 +44,6 @@ def get_sigungu_code(sigungu_name, dong_name):
     except:
         return None, None
 
-# --- 4. 🌟 실거래가 데이터 가져오는 함수 (에러 완벽 진단 + 숨 고르기 장착!) ---
 def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_type, trans_type):
     dict_key = f"{prop_type}_{trans_type}"
     if dict_key not in API_PATHS:
@@ -75,17 +73,21 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         try:
             response = requests.get(url)
             
-            # 🌟 숨어있는 API 에러(트래픽 초과 등)를 완벽하게 잡아냅니다!
+            # 🌟 수정됨: 공공데이터포털 자체 차단 (미승인 키, 트래픽 초과 등)
             if 'OpenAPI_ServiceResponse' in response.text:
                 xml_data = xmltodict.parse(response.content)
                 err_msg = xml_data.get('OpenAPI_ServiceResponse', {}).get('cmmMsgHeader', {}).get('errMsg', '알 수 없는 에러')
-                st.error(f"🚨 공공데이터포털 차단 발생: {err_msg} (일일 조회 한도 초과 또는 서버 불안정일 수 있습니다.)")
-                break # 뒤에 남은 달도 어차피 에러이므로 즉시 조회 중단
+                st.error(f"🚨 서버 에러 ({target_month}): {err_msg} (해당 매물의 활용신청이 안 되어 있거나 한도 초과입니다.)")
+                break 
                 
             xml_data = xmltodict.parse(response.content)
-            result_code = xml_data.get('response', {}).get('header', {}).get('resultCode')
+            header = xml_data.get('response', {}).get('header', {})
+            result_code = header.get('resultCode')
+            result_msg = header.get('resultMsg', '에러 메시지 없음')
             
+            # 🌟 수정됨: 국토부 서버에서 거절한 경우 명확히 표시
             if result_code not in ['00', '0', '200', '000']:
+                st.error(f"🚨 국토부 거절 ({target_month}): {result_msg} (코드: {result_code})")
                 continue
                 
             items_dict = xml_data.get('response', {}).get('body', {}).get('items')
@@ -95,16 +97,16 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
                 all_data.append(pd.DataFrame(item_list))
                 
         except Exception as e:
+            st.error(f"🚨 데이터 처리 중 에러 발생: {e}")
             continue
             
-        # 🌟 너무 빠른 연속 요청 방지를 위해 0.1초씩 쉬어줍니다.
         time.sleep(0.1)
             
     status_text.empty()
     progress_bar.empty()
 
     if not all_data:
-        st.warning(f"해당 기간 동안 거래된 내역이 없거나, 서버 문제로 조회가 중단되었습니다. (기간을 줄여서 다시 시도해보세요.)")
+        st.warning(f"선택하신 기간 동안 거래된 내역이 없거나, 서버 문제로 조회가 중단되었습니다. 위에 뜬 빨간색 에러 메시지를 확인해주세요.")
         return pd.DataFrame()
         
     df = pd.concat(all_data, ignore_index=True)
@@ -145,8 +147,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
                 try:
                     price_str = str(row['거래금액']).replace(',', '').strip()
                     area_str = str(row[available_area_col]).replace(',', '').strip()
-                    if not price_str or not area_str or price_str == 'nan' or area_str == 'nan':
-                        return ""
+                    if not price_str or not area_str or price_str == 'nan' or area_str == 'nan': return ""
                     price = int(price_str) 
                     area = float(area_str) 
                     if area <= 0: return ""
@@ -157,7 +158,6 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
                     if uk > 0: return f"{uk}억 {man}만원" if man > 0 else f"{uk}억원"
                     return f"{price_per_pyeong}만원"
                 except: return ""
-                    
             filtered_df['평당가격'] = filtered_df.apply(calc_pyeong_price, axis=1)
 
     display_cols = ['계약일', '소재지', '건물유형', '건물명', '지목', '용도지역', '건축년도', '대지면적', '연면적', '전용면적', '계약면적', '거래면적', '층', '거래금액', '평당가격', '보증금', '월세', '거래유형']
@@ -182,7 +182,6 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         
     return result_df
 
-# --- 5. 웹 화면 UI 구성 ---
 st.set_page_config(page_title="부동산 실거래가 조회 봇", layout="wide")
 st.title("🏢 올인원 실거래가 조회 봇")
 
@@ -194,52 +193,4 @@ prev_month_str = prev_month_date.strftime('%Y%m')
 with st.form("search_form"):
     col1, col2 = st.columns(2)
     with col1:
-        property_type = st.selectbox("매물 종류", ["아파트", "오피스텔", "연립/다세대", "단독/다가구", "상업/업무용", "공장 및 창고", "토지"])
-    with col2:
-        transaction_type = st.selectbox("거래 종류", ["매매", "전월세"])
-        
-    col3, col4, col5, col6 = st.columns(4)
-    with col3:
-        sigungu_name = st.text_input("시/군/구 (예: 서초구)", value="서초구")
-    with col4:
-        dong_name = st.text_input("법정동 (빈칸 시 구 전체 조회)", value="")
-    with col5:
-        start_month = st.text_input("시작 월 (예: 202301)", value=prev_month_str)
-    with col6:
-        end_month = st.text_input("종료 월 (예: 202406)", value=current_month_str)
-        
-    submitted = st.form_submit_button("🔍 전체 기간 조회하기")
-
-# --- 6. 조회 버튼 클릭 시 동작 ---
-if submitted:
-    if not sigungu_name:
-        st.warning("시/군/구 이름은 반드시 입력해주세요.")
-    else:
-        sigungu_code, full_region_name = get_sigungu_code(sigungu_name, dong_name)
-        
-        if sigungu_code:
-            display_dong = dong_name.strip() if dong_name.strip() else "전체"
-            
-            if dong_name.strip() == "":
-                st.success(f"✅ 지역 변환 성공: {sigungu_name} 전체 ({sigungu_code})")
-            else:
-                st.success(f"✅ 지역 변환 성공: {full_region_name} ({sigungu_code})")
-            
-            real_data_df = get_real_estate_data(sigungu_code, start_month, end_month, dong_name, property_type, transaction_type)
-            
-            if not real_data_df.empty:
-                real_data_df.index = range(1, len(real_data_df) + 1)
-                total_count = len(real_data_df)
-                
-                st.subheader(f"📊 {sigungu_name} {display_dong} {property_type} {transaction_type} ({start_month}~{end_month}) - 총 {total_count}건")
-                st.dataframe(real_data_df, use_container_width=True)
-                
-                excel_buffer = BytesIO()
-                with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
-                    real_data_df.to_excel(writer, index=True, index_label='순번', sheet_name='실거래가')
-                
-                st.download_button("📥 엑셀 파일로 다운로드", data=excel_buffer.getvalue(),
-                                   file_name=f"{sigungu_name}_{display_dong}_{property_type}_{transaction_type}_{start_month}_{end_month}.xlsx")
-        else:
-            search_target = f"{sigungu_name} {dong_name}".strip()
-            st.error(f"'{search_target}'에 해당하는 지역을 찾을 수 없습니다. 오타가 없는지 확인해주세요.")
+        property_type = st.selectbox("매물 종류", ["아파트", "오피
