@@ -13,7 +13,7 @@ MOLIT_API_KEY = "z92CW%2FlIVtpHa46lUJJ5WCMBVQEu8C8YQS9sY2nFsG3nKq0S2J4W997c7ENV6
 API_PATHS = {
     "아파트_매매": "RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev",
     "아파트_전월세": "RTMSDataSvcAptRent/getRTMSDataSvcAptRent",
-    "아파트 분양권_매매": "RTMSDataSvcSilvTrade/getRTMSDataSvcSilvTrade",  # 🌟 아파트분양권 추가!
+    "아파트분양권_매매": "RTMSDataSvcSilvTrade/getRTMSDataSvcSilvTrade",  # 🌟 이 줄이 빠져있었을 겁니다!
     "오피스텔_매매": "RTMSDataSvcOffiTrade/getRTMSDataSvcOffiTrade",
     "오피스텔_전월세": "RTMSDataSvcOffiRent/getRTMSDataSvcOffiRent",
     "연립/다세대_매매": "RTMSDataSvcRHTrade/getRTMSDataSvcRHTrade",
