@@ -143,7 +143,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 # --- 5. 웹 화면 UI 구성 ---
 st.set_page_config(page_title="부동산 실거래가 조회 봇", layout="wide")
-st.title("🏢 올인원 실거래가 조회 봇")
+st.title("🏢 부동산 실거래가 조회 봇")
 
 # 🌟 날짜 자동 계산: '현재 달'과 '직전 달'을 각각 계산합니다.
 current_date = pd.Timestamp.now()
@@ -206,4 +206,5 @@ if submitted:
                                    file_name=f"{sigungu_name}_{display_dong}_{property_type}_{transaction_type}_{start_month}_{end_month}.xlsx")
         else:
             search_target = f"{sigungu_name} {dong_name}".strip()
+
             st.error(f"'{search_target}'에 해당하는 지역을 찾을 수 없습니다. 오타가 없는지 확인해주세요.")
