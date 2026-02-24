@@ -6,8 +6,8 @@ import time
 from io import BytesIO
 
 # --- 1. API 키 설정 ---
-DONG_API_KEY = "z92CW%2FlIVtpHa46lUJJ5WCMBVQEu8C8YQS9sY2nFsG3nKq0S2J4W997c7ENV6x02Rsnf6RKJcY1hc8cLc2OlxQ%3D%3D"
-MOLIT_API_KEY = "z92CW%2FlIVtpHa46lUJJ5WCMBVQEu8C8YQS9sY2nFsG3nKq0S2J4W997c7ENV6x02Rsnf6RKJcY1hc8cLc2OlxQ%3D%3D"
+DONG_API_KEY = "여기에_법정동_키를_넣으세요"
+MOLIT_API_KEY = "여기에_국토교통부_일반인증키(Encoding)를_넣으세요"
 
 # --- 2. 매물 및 거래 종류별 국토부 API 주소 ---
 API_PATHS = {
@@ -126,7 +126,9 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
     else:
         filtered_df = df.copy() 
         
-    if filtered_df.empty: return pd.DataFrame()
+    if filtered_df.empty: 
+        st.warning(f"'{dong_name}' 지역에는 해당 기간 동안 거래된 내역이 없습니다.") # 🌟 이 줄을 추가!
+        return pd.DataFrame()
         
     filtered_df = filtered_df.rename(columns={
         'dealYear': '년', 'dealMonth': '월', 'dealDay': '일', 'umdNm': '법정동', 'jibun': '지번',
