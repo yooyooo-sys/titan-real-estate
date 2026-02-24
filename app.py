@@ -6,8 +6,8 @@ import time
 from io import BytesIO
 
 # --- 1. API 키 설정 ---
-DONG_API_KEY = "여기에_법정동_키를_넣으세요"
-MOLIT_API_KEY = "여기에_국토교통부_일반인증키(Encoding)를_넣으세요"
+DONG_API_KEY = "z92CW%2FlIVtpHa46lUJJ5WCMBVQEu8C8YQS9sY2nFsG3nKq0S2J4W997c7ENV6x02Rsnf6RKJcY1hc8cLc2OlxQ%3D%3D"
+MOLIT_API_KEY = "z92CW%2FlIVtpHa46lUJJ5WCMBVQEu8C8YQS9sY2nFsG3nKq0S2J4W997c7ENV6x02Rsnf6RKJcY1hc8cLc2OlxQ%3D%3D"
 
 # --- 2. 매물 및 거래 종류별 국토부 API 주소 ---
 API_PATHS = {
