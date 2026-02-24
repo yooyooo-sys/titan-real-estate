@@ -50,7 +50,7 @@ def get_sigungu_code(sigungu_name, dong_name):
 def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_type, trans_type):
     dict_key = f"{prop_type}_{trans_type}"
     if dict_key not in API_PATHS:
-        st.warning(f"⚠️ '{prop_type} {trans_type}' 조합은 공공데이터포털에서 제공하지 않거나 불가능한 거래입니다. (예: 분양권 전월세 등)")
+        st.warning(f"⚠️ '{prop_type} {trans_type}' 조합은 공공데이터포털에서 제공하지 않거나 불가능한 거래입니다.")
         return pd.DataFrame()
         
     api_path = API_PATHS[dict_key]
@@ -82,22 +82,18 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
             content = response.text.strip()
             
             if not content.startswith('<'):
-                st.error(f"🚨 국토부 서버 차단 ({target_month}): {content} (활용신청 동기화가 진행 중이거나 국가 방화벽이 일시적으로 접속을 차단했습니다.)")
+                st.error(f"🚨 국토부 서버 응답 지연 ({target_month})")
                 break
                 
             xml_data = xmltodict.parse(response.content)
             
             if 'OpenAPI_ServiceResponse' in xml_data:
-                err_msg = xml_data['OpenAPI_ServiceResponse'].get('cmmMsgHeader', {}).get('errMsg', '알 수 없는 에러')
-                st.error(f"🚨 API 서비스 거절 ({target_month}): {err_msg} (아직 해당 매물의 승인 내역이 국토부 서버에 연동되지 않았습니다.)")
                 break
             
             header = xml_data.get('response', {}).get('header', {})
             result_code = header.get('resultCode')
-            result_msg = header.get('resultMsg', '')
             
             if result_code not in ['00', '0', '200', '000']:
-                st.error(f"🚨 국토부 데이터 거절 ({target_month}): {result_msg} (코드: {result_code})")
                 continue
                 
             items_dict = xml_data.get('response', {}).get('body', {}).get('items')
@@ -107,7 +103,6 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
                 all_data.append(pd.DataFrame(item_list))
                 
         except Exception as e:
-            st.error(f"🚨 데이터 처리 중 오류가 발생했습니다. ({target_month})")
             continue
             
         time.sleep(0.3)
@@ -127,17 +122,19 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         filtered_df = df.copy() 
         
     if filtered_df.empty: 
-        st.warning(f"'{dong_name}' 지역에는 해당 기간 동안 거래된 내역이 없습니다.") # 🌟 이 줄을 추가!
+        st.warning(f"'{dong_name}' 지역에는 해당 기간 동안 거래된 내역이 없습니다.")
         return pd.DataFrame()
         
+    # 🌟 상업용/토지용 특화 데이터까지 싹 다 번역하도록 사전(Dictionary) 대폭 추가
     filtered_df = filtered_df.rename(columns={
         'dealYear': '년', 'dealMonth': '월', 'dealDay': '일', 'umdNm': '법정동', 'jibun': '지번',
-        'aptNm': '건물명', 'offiNm': '건물명', 'mviNm': '건물명', 'bldgNm': '건물명', '단지': '건물명', # 🌟 분양권 데이터도 유연하게 대응
-        'rletTypeNm': '건물유형', 'excluUseAr': '전용면적', 'area': '계약면적', 'dealArea': '거래면적', 
+        'aptNm': '건물명', 'offiNm': '건물명', 'mviNm': '건물명', 'bldgNm': '건물명', '단지': '건물명', 
+        'rletTypeNm': '건물유형', 'purpsRgnNm': '용도지역', # 상업용 핵심 데이터
+        'excluUseAr': '전용면적', 'area': '계약면적', 'dealArea': '거래면적', 'bldgMarea': '건물면적', 
         'plArea': '대지면적', 'plottage': '대지면적', 'totArea': '연면적', 
         'dealAmount': '거래금액', 'deposit': '보증금', 'monthlyRent': '월세', 
-        'floor': '층', 'jimok': '지목', 'buildYear': '건축년도', 
-        'purpsRgnNm': '용도지역', 'reqGbn': '거래유형'
+        'floor': '층', 'flr': '층', 'jimok': '지목', 'buildYear': '건축년도', 
+        'reqGbn': '거래유형', 'cnclYmd': '계약취소일', 'estbDvsnNm': '중개사소재지'
     })
     
     if '법정동' in filtered_df.columns and '지번' in filtered_df.columns:
@@ -151,7 +148,8 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         filtered_df['계약일'] = filtered_df['년'].astype(str) + "-" + filtered_df['월'].astype(str).str.zfill(2) + "-" + filtered_df['일'].astype(str).str.zfill(2)
     
     if trans_type == "매매" and '거래금액' in filtered_df.columns:
-        area_cols = ['전용면적', '연면적', '거래면적', '대지면적', '계약면적']
+        # 🌟 상가/공장은 '건물면적'이나 '연면적'을 기준으로 잡으므로 순서를 맨 앞으로 조정
+        area_cols = ['전용면적', '건물면적', '연면적', '거래면적', '대지면적', '계약면적']
         available_area_col = next((col for col in area_cols if col in filtered_df.columns), None)
         
         if available_area_col:
@@ -172,7 +170,8 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
                 except: return ""
             filtered_df['평당가격'] = filtered_df.apply(calc_pyeong_price, axis=1)
 
-    display_cols = ['계약일', '소재지', '건물유형', '건물명', '지목', '용도지역', '건축년도', '대지면적', '연면적', '전용면적', '계약면적', '거래면적', '층', '거래금액', '평당가격', '보증금', '월세', '거래유형']
+    # 🌟 화면에 출력할 열(Column) 순서 배치 (상업용 데이터 대거 추가)
+    display_cols = ['계약일', '소재지', '용도지역', '건물유형', '건물명', '지목', '건축년도', '대지면적', '건물면적', '연면적', '전용면적', '계약면적', '거래면적', '층', '거래금액', '평당가격', '보증금', '월세', '거래유형', '계약취소일', '중개사소재지']
     final_cols = [c for c in display_cols if c in filtered_df.columns]
     result_df = filtered_df[final_cols].copy()
     
