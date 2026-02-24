@@ -46,7 +46,7 @@ def get_sigungu_code(sigungu_name, dong_name):
     except:
         return None, None
 
-# --- 4. 실거래가 데이터 가져오는 함수 ---
+# --- 4. 실거래가 데이터 가져오는 함수 (모든 숨은 데이터 싹쓸이 버전!) ---
 def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_type, trans_type):
     dict_key = f"{prop_type}_{trans_type}"
     if dict_key not in API_PATHS:
@@ -125,13 +125,15 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         st.warning(f"'{dong_name}' 지역에는 해당 기간 동안 거래된 내역이 없습니다.")
         return pd.DataFrame()
         
-    # 🌟 상업용/토지용 특화 데이터까지 싹 다 번역하도록 사전(Dictionary) 대폭 추가
+    # 🌟 상업용/토지용 등 국토부가 쓰는 '다양한 변종 태그명' 모두 포획
     filtered_df = filtered_df.rename(columns={
         'dealYear': '년', 'dealMonth': '월', 'dealDay': '일', 'umdNm': '법정동', 'jibun': '지번',
         'aptNm': '건물명', 'offiNm': '건물명', 'mviNm': '건물명', 'bldgNm': '건물명', '단지': '건물명', 
-        'rletTypeNm': '건물유형', 'purpsRgnNm': '용도지역', # 상업용 핵심 데이터
-        'excluUseAr': '전용면적', 'area': '계약면적', 'dealArea': '거래면적', 'bldgMarea': '건물면적', 
-        'plArea': '대지면적', 'plottage': '대지면적', 'totArea': '연면적', 
+        'rletTypeNm': '건물유형', 'rletTpNm': '건물유형',
+        'purpsRgnNm': '용도지역', 'prpsRgnNm': '용도지역', 
+        'excluUseAr': '전용면적', 'area': '계약면적', 'dealArea': '거래면적', 
+        'bldgMarea': '건물면적', 'blgMarea': '건물면적', 'bldgArea': '건물면적', 
+        'plArea': '대지면적', 'platArea': '대지면적', 'totArea': '연면적', 
         'dealAmount': '거래금액', 'deposit': '보증금', 'monthlyRent': '월세', 
         'floor': '층', 'flr': '층', 'jimok': '지목', 'buildYear': '건축년도', 
         'reqGbn': '거래유형', 'cnclYmd': '계약취소일', 'estbDvsnNm': '중개사소재지'
@@ -148,7 +150,6 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         filtered_df['계약일'] = filtered_df['년'].astype(str) + "-" + filtered_df['월'].astype(str).str.zfill(2) + "-" + filtered_df['일'].astype(str).str.zfill(2)
     
     if trans_type == "매매" and '거래금액' in filtered_df.columns:
-        # 🌟 상가/공장은 '건물면적'이나 '연면적'을 기준으로 잡으므로 순서를 맨 앞으로 조정
         area_cols = ['전용면적', '건물면적', '연면적', '거래면적', '대지면적', '계약면적']
         available_area_col = next((col for col in area_cols if col in filtered_df.columns), None)
         
@@ -170,9 +171,15 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
                 except: return ""
             filtered_df['평당가격'] = filtered_df.apply(calc_pyeong_price, axis=1)
 
-    # 🌟 화면에 출력할 열(Column) 순서 배치 (상업용 데이터 대거 추가)
+    # 1. 우선적으로 화면에 예쁘게 배치할 순서
     display_cols = ['계약일', '소재지', '용도지역', '건물유형', '건물명', '지목', '건축년도', '대지면적', '건물면적', '연면적', '전용면적', '계약면적', '거래면적', '층', '거래금액', '평당가격', '보증금', '월세', '거래유형', '계약취소일', '중개사소재지']
     final_cols = [c for c in display_cols if c in filtered_df.columns]
+    
+    # 🌟 2. 숨은 데이터 싹쓸이: 국토부가 보낸 원본 데이터 중 우리가 번역하지 못한 것들이 있다면, 버리지 말고 표 맨 뒤에 모두 붙여넣기!
+    hide_sys_cols = ['년', '월', '일', '법정동', '지번', 'sggCd', 'no', 'cstmMgtNo', 'dealType']
+    extra_cols = [c for c in filtered_df.columns if c not in final_cols and c not in hide_sys_cols]
+    final_cols.extend(extra_cols)
+    
     result_df = filtered_df[final_cols].copy()
     
     def format_money(price_str):
