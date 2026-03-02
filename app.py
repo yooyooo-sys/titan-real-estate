@@ -167,7 +167,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수 (비밀 지번 & 유령 대장 완벽 회피 엔진!)
+# 🌟 [기능 2] 건축물대장 처리 함수 (비밀 지번 최우선 탐색 & 엄격 필터링!)
 # ==========================================
 import re 
 import pandas as pd
@@ -240,13 +240,13 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
         if t_clean in dongs_in_bld: return True
         return False
 
-    # 🌟 [특급 엔진] 대단지 아파트는 '일반 대지(0)'에 유령 대장을 남기고, 진짜 데이터는 '로트(3)'나 '블록(2)'에 숨겨둡니다.
-    # 그래서 platGbCd를 0, 2, 3 모두 강력하게 스캔하여 진짜 면적이 있는 대장만 골라냅니다!
+    # 🌟 [특급 엔진] 대단지 아파트의 '진짜' 데이터는 무조건 3(로트)이나 2(블록)에 있습니다.
+    # 0(일반)에 있는 가짜 유령 대장에 낚이지 않도록 탐색 순서를 [3 -> 2 -> 0]으로 뒤집습니다!
     search_bun, search_ji, search_plat_gb = bun, ji, plat_gb_cd
     mapped_db_dong = None 
     found_real_record = False
     
-    plat_candidates = ['0', '3', '2'] if plat_gb_cd != '1' else ['1']
+    plat_candidates = ['3', '2', '0'] if plat_gb_cd != '1' else ['1']
     
     for p_gb in plat_candidates:
         title_url = f"http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={p_gb}&bun={bun}&ji={ji}&numOfRows=1000&pageNo=1"
@@ -260,7 +260,6 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
                 d_val = str(item.get('dongNm', ''))
                 b_val = str(item.get('bldNm', ''))
                 
-                # 유령 대장 판별: 연면적(totArea)이 아예 0이거나 빈칸이면 가짜 데이터이므로 무시!
                 tot_area = item.get('totArea', '0')
                 try: tot_area_f = float(str(tot_area).replace(',',''))
                 except: tot_area_f = 0.0
@@ -293,10 +292,9 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
     status_text = st.empty()
     
     for page in range(1, 21):
-        # 유저가 알기 쉽게 탐색 중인 비밀 지번 코드를 화면에 표시
         gb_name = "특수 로트(3)" if search_plat_gb == '3' else ("특수 블록(2)" if search_plat_gb == '2' else "일반 대지(0)")
         if target_ho:
-            status_text.info(f"⏳ 국토부 비밀 지번코드[{gb_name}]를 추적하여 '진짜 전유부' 싹쓸이 탐색 중... ({page}페이지)")
+            status_text.info(f"⏳ 국토부 비밀 지번코드[{gb_name}]를 최우선 추적하여 '진짜 전유부' 탐색 중... ({page}페이지)")
         else:
             status_text.info(f"⏳ 건축물대장 데이터를 싹쓸이 탐색 중입니다... ({page}페이지)")
             
@@ -359,12 +357,13 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
         if t_clean in dongs_in_bld: return True
         return False
 
+    # 🌟 1. 호수 필터링 (엄격하게!)
     if target_ho and 'hoNm' in df.columns:
-        df_ho = df[df.apply(lambda r: ho_match(r, target_ho), axis=1)]
-        if not df_ho.empty:
-            df = df_ho
+        # 찾은 호수만 정확히 남기고, 못 찾으면 과감히 빈 데이터프레임으로 만듭니다. (잘못된 배려 삭제)
+        df = df[df.apply(lambda r: ho_match(r, target_ho), axis=1)]
 
-    if target_dong:
+    # 🌟 2. 동 필터링
+    if target_dong and not df.empty:
         df_dong = df[df.apply(lambda r: dong_match_final(r, target_dong, mapped_db_dong), axis=1)]
         if not df_dong.empty:
             df = df_dong
@@ -461,9 +460,9 @@ with tab2:
         with col1:
             address_input = st.text_input("조회할 텍스트 주소 (필수)", placeholder="예: 상도동 450")
         with col2:
-            dong_input = st.text_input("동 (선택)", placeholder="예: 105")
+            dong_input = st.text_input("동 (선택)", placeholder="예: 103")
         with col3:
-            ho_input = st.text_input("호수 (선택)", placeholder="예: 201")
+            ho_input = st.text_input("호수 (선택)", placeholder="예: 302")
             
         bld_submitted = st.form_submit_button("🔍 건축물대장 요약 문서 열람")
         
@@ -525,7 +524,7 @@ with tab2:
                                 
                             계약면적 = 전용면적 + 공용면적
                             
-                            # 🌟 유령 대장 스킵: 면적이 0인 가짜 데이터는 화면에 띄우지 않고 아예 버립니다!
+                            # 유령 대장 스킵
                             if 계약면적 <= 0.0 and len(unique_pks) > 1:
                                 continue
                                 
