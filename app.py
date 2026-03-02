@@ -167,7 +167,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수 (초거대 한글 번역 사전 & 동/호수 완벽 검색!)
+# 🌟 [기능 2] 건축물대장 처리 함수 (동/호수 스마트 방어막 탑재!)
 # ==========================================
 def parse_address_for_bldrgst(address_str):
     parts = address_str.strip().split()
@@ -239,21 +239,25 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
             
             df = pd.DataFrame(item_list)
             
-            # 🌟 1단계: '동' 필터링 (예: 101동)
-            if target_dong and not df.empty and 'dongNm' in df.columns:
-                search_dong = ''.join(filter(str.isalnum, target_dong))
-                def match_dong(x):
-                    if pd.isna(x) or str(x) == 'None': return False
-                    return search_dong in ''.join(filter(str.isalnum, str(x)))
-                df = df[df['dongNm'].apply(match_dong)]
+            # 🌟 🛡️ 스마트 방어막: 한글/숫자만 남기고 특수문자나 띄어쓰기는 완벽 제거
+            clean_dong = ''.join(filter(str.isalnum, str(target_dong)))
+            clean_ho = ''.join(filter(str.isalnum, str(target_ho)))
+            
+            # 🌟 '동' 필터링 (빈칸, '0', '없음' 등을 입력하면 아예 무시하고 전체 검색)
+            if clean_dong and clean_dong not in ['0', '없음', 'none', 'null']:
+                if 'dongNm' in df.columns:
+                    def match_dong(x):
+                        if pd.isna(x) or str(x).strip() in ['None', '', 'nan']: return False
+                        return clean_dong in ''.join(filter(str.isalnum, str(x)))
+                    df = df[df['dongNm'].apply(match_dong)]
 
-            # 🌟 2단계: '호' 필터링 (예: 301호)
-            if target_ho and not df.empty and 'hoNm' in df.columns:
-                search_ho = ''.join(filter(str.isalnum, target_ho))
-                def match_ho(x):
-                    if pd.isna(x) or str(x) == 'None': return False
-                    return search_ho in ''.join(filter(str.isalnum, str(x)))
-                df = df[df['hoNm'].apply(match_ho)]
+            # 🌟 '호' 필터링
+            if clean_ho and clean_ho not in ['0', '없음']:
+                if 'hoNm' in df.columns:
+                    def match_ho(x):
+                        if pd.isna(x) or str(x).strip() in ['None', '', 'nan']: return False
+                        return clean_ho in ''.join(filter(str.isalnum, str(x)))
+                    df = df[df['hoNm'].apply(match_ho)]
             
             mega_rename_dict = {
                 'rnum': '순번', 'platPlc': '대지위치', 'sigunguCd': '시군구코드', 'bjdongCd': '법정동코드',
@@ -342,14 +346,13 @@ with tab1:
 # ----------------- [탭 2] 건축물대장 (실제 문서 폼 적용!) -----------------
 with tab2:
     st.subheader("📋 특정 지번 건축물대장 (표제/전유부) 요약")
-    st.info("💡 대단지 아파트는 **'동'**과 **'호수'**를 함께 입력하시면 원하는 세대의 [전유부]를 빠르고 정확하게 찾아냅니다.")
+    st.info("💡 대단지 아파트는 **'동'**과 **'호수'**를 함께 입력하시고, 동이 없는 빌라는 동 칸을 비워두세요. (0이나 없음으로 쳐도 봇이 알아서 무시합니다.)")
     
     with st.form("bldrgst_form"):
         col1, col2, col3 = st.columns([2, 1, 1])
         with col1:
-            address_input = st.text_input("조회할 텍스트 주소 (필수)", placeholder="예: 반포동 18-1")
+            address_input = st.text_input("조회할 텍스트 주소 (필수)", placeholder="예: 상도동 360-4")
         with col2:
-            # 🌟 '동' 입력칸 신규 추가!
             dong_input = st.text_input("동 (선택)", placeholder="예: 114")
         with col3:
             ho_input = st.text_input("호수 (선택)", placeholder="예: 301")
@@ -365,7 +368,9 @@ with tab2:
             sgg_cd, bjdong_cd, full_loc_name = get_full_bjdong_code(region_search_term)
             
             if sgg_cd and bjdong_cd:
-                # 🌟 API 찌를 때 '동' 입력값도 같이 넘겨줍니다.
+                # 🌟 안심 알림창 복구 완료!
+                st.success(f"✅ 주소 파싱 성공: {full_loc_name} (본번:{bun} 부번:{ji})")
+                
                 bld_df = get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, dong_input, ho_input)
                 
                 if not bld_df.empty:
@@ -400,8 +405,9 @@ with tab2:
                             addr = get_clean_val(main_row, '도로명주소', get_clean_val(main_row, '대지위치', '-'))
                             
                             b_nm = get_clean_val(main_row, '건물명', '')
-                            # 동 명칭이 비어있으면 유저가 입력한 동이라도 강제 출력
-                            d_nm = get_clean_val(main_row, '동명칭', f'{dong_input}동' if dong_input else '')
+                            # 동 입력값이 정상적인 글자일 때만 출력
+                            clean_d_input = ''.join(filter(str.isalnum, str(dong_input)))
+                            d_nm = get_clean_val(main_row, '동명칭', f'{dong_input}동' if clean_d_input and clean_d_input not in ['0', '없음'] else '')
                             h_nm = get_clean_val(main_row, '호명칭', f'{ho_input}호')
                             full_name = " ".join([x for x in [b_nm, d_nm, h_nm] if x])
                             
@@ -420,7 +426,7 @@ with tab2:
                             """, unsafe_allow_html=True)
                             
                             with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기 (100% 한글화 완료)"):
-                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다. 영어 태그들을 모두 실무 용어로 번역해 두었으니, 어떤 데이터가 누락되었는지 한눈에 확인하실 수 있습니다.")
+                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다. 누락된 데이터가 있는지 확인해보세요.")
                                 st.dataframe(bld_df)
                             
                         # 🌟 표제부 (건물 전체)
@@ -428,8 +434,9 @@ with tab2:
                             main_row = bld_df.iloc[0]
                             addr = get_clean_val(main_row, '도로명주소', get_clean_val(main_row, '대지위치', '-'))
                             bld_name = get_clean_val(main_row, '건물명', '')
-                            # 동만 검색했을 경우 제목에 동 추가
-                            dong_title = f" {get_clean_val(main_row, '동명칭', '')}" if dong_input else ""
+                            
+                            clean_d_input = ''.join(filter(str.isalnum, str(dong_input)))
+                            dong_title = f" {get_clean_val(main_row, '동명칭', '')}" if clean_d_input and clean_d_input not in ['0', '없음'] else ""
                             
                             use_day = get_clean_val(main_row, '사용승인일', '-')
                             use_day_fmt = f"{use_day[:4]}년 {use_day[4:6]}월 {use_day[6:8]}일" if len(use_day)==8 and use_day.isdigit() else use_day
@@ -453,9 +460,9 @@ with tab2:
                             """, unsafe_allow_html=True)
                             
                             with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기 (100% 한글화 완료)"):
-                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다. 영어 태그들을 모두 실무 용어로 번역해 두었으니, 어떤 데이터가 누락되었는지 한눈에 확인하실 수 있습니다.")
+                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다. 누락된 데이터가 있는지 확인해보세요.")
                                 st.dataframe(bld_df)
                 else:
-                    st.warning(f"해당 지번에 대한 건축물대장 정보가 없습니다. 지번이나 동/호수를 확인해주세요.")
+                    st.warning(f"해당 지번에 대한 건축물대장 정보가 없습니다. 지번이나 동/호수를 다시 한번 확인해주세요.")
             else:
                 st.error("해당하는 지역을 찾을 수 없습니다.")
