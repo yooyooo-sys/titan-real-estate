@@ -167,9 +167,14 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수 (대단지 싹쓸이 & 무적 필터링 엔진!)
+# 🌟 [기능 2] 건축물대장 처리 함수 (무적의 우회 탐색 & 다중 카드 렌더링!)
 # ==========================================
-import re # 정밀 타격을 위한 정규식 엔진 탑재
+import re 
+import pandas as pd
+import requests
+import xmltodict
+import time
+from io import BytesIO
 
 def parse_address_for_bldrgst(address_str):
     parts = address_str.strip().split()
@@ -221,7 +226,6 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
     all_items = []
     status_text = st.empty()
     
-    # 🌟 대단지 아파트를 위해 최대 20장(2만 건)까지 알아서 넘겨가며 싹쓸이합니다!
     for page in range(1, 21):
         status_text.info(f"⏳ 대단지 건축물대장 데이터를 싹쓸이 탐색 중입니다... (현재 {page}페이지)")
         url = f"{base_url}?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={plat_gb_cd}&bun={bun}&ji={ji}&numOfRows=1000&pageNo={page}"
@@ -255,19 +259,16 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
         except Exception as e:
             break
             
-    status_text.empty() # 탐색이 끝나면 알림창 숨김
+    status_text.empty() 
     
     if not all_items:
         return pd.DataFrame()
         
     df = pd.DataFrame(all_items)
     
-    # 🌟 무적의 정밀 타격 엔진
     def is_exact_match(t_clean, api_val):
         if pd.isna(api_val) or str(api_val).strip() in ['None', '', 'nan']: return False
         api_str = str(api_val).upper()
-        
-        # 숫자만 찾을 경우 (1301호 낚임 완벽 차단)
         if t_clean.isdigit():
             nums = re.findall(r'\d+', api_str)
             for n in nums:
@@ -278,35 +279,37 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
             if t_clean in tokens: return True
         return False
 
-    def dong_match(row, target):
-        if not target: return True
-        t_clean = ''.join(filter(str.isalnum, str(target))).upper().replace('동','').replace('호','').replace('제','')
-        if not t_clean or t_clean in ['0', '없음', 'NONE', 'NULL']: return True
-        
-        d_val = str(row.get('dongNm', ''))
-        b_val = str(row.get('bldNm', ''))
-        
-        # 1. 정상적으로 동명칭에 있는 경우
-        if is_exact_match(t_clean, d_val): return True
-        
-        # 2. 건물명에 동 이름이 숨어있는 경우 (예: 상도래미안 101동)
-        dongs_in_bld = re.findall(r'(\d+)동', b_val)
-        if t_clean in dongs_in_bld: return True
-        return False
-
     def ho_match(row, target):
         if not target: return True
         t_clean = ''.join(filter(str.isalnum, str(target))).upper().replace('동','').replace('호','').replace('제','')
         if not t_clean or t_clean in ['0', '없음', 'NONE', 'NULL']: return True
-        
         h_val = str(row.get('hoNm', ''))
         return is_exact_match(t_clean, h_val)
+        
+    def dong_match(row, target):
+        if not target: return True
+        t_clean = ''.join(filter(str.isalnum, str(target))).upper().replace('동','').replace('호','').replace('제','')
+        if not t_clean or t_clean in ['0', '없음', 'NONE', 'NULL']: return True
+        d_val = str(row.get('dongNm', ''))
+        b_val = str(row.get('bldNm', ''))
+        if is_exact_match(t_clean, d_val): return True
+        dongs_in_bld = re.findall(r'(\d+)동', b_val)
+        if t_clean in dongs_in_bld: return True
+        return False
 
+    # 1. 호수 먼저 확실하게 필터링
+    if target_ho and 'hoNm' in df.columns:
+        df_ho = df[df.apply(lambda r: ho_match(r, target_ho), axis=1)]
+        if not df_ho.empty:
+            df = df_ho
+
+    # 2. 동 필터링 & 스마트 우회 기능 탑재!
     if target_dong:
-        df = df[df.apply(lambda r: dong_match(r, target_dong), axis=1)]
-
-    if target_ho:
-        df = df[df.apply(lambda r: ho_match(r, target_ho), axis=1)]
+        df_dong = df[df.apply(lambda r: dong_match(r, target_dong), axis=1)]
+        if not df_dong.empty:
+            df = df_dong
+        else:
+            st.warning(f"🚨 국토부 전산에 '{target_dong}'이라는 명칭이 없습니다! (인허가 당시 '주1동', '에이동' 등으로 꼼수 등록된 경우입니다.) 자동 우회하여 입력하신 호수({target_ho})가 포함된 아파트 전체 세대를 모두 찾아 보여드립니다.")
         
     mega_rename_dict = {
         'rnum': '순번', 'platPlc': '대지위치', 'sigunguCd': '시군구코드', 'bjdongCd': '법정동코드',
@@ -388,7 +391,7 @@ with tab1:
             else:
                 st.error("지역을 찾을 수 없습니다. 오타가 없는지 확인해주세요.")
 
-# ----------------- [탭 2] 건축물대장 (실제 문서 폼 적용!) -----------------
+# ----------------- [탭 2] 건축물대장 (다중 출력 폼 적용!) -----------------
 with tab2:
     st.subheader("📋 특정 지번 건축물대장 (표제/전유부) 요약")
     st.info("💡 대단지 아파트는 **'동'**과 **'호수'**를 함께 입력하시고, 동이 없는 건물은 동 칸을 비워두세요.")
@@ -429,73 +432,81 @@ with tab2:
                         '대장종류코드', '로트', '도로명코드', '도로명법정동코드', '지하구분코드', '층구분코드'
                     ]
 
-                    with st.container(border=True):
-                        # 🌟 전유부 (호수 입력 시)
-                        if ho_input:
-                            if '전유공용구분' in bld_df.columns:
-                                is_jeonyu = bld_df['전유공용구분'].astype(str).str.contains('전유', na=False)
-                                is_gongyong = bld_df['전유공용구분'].astype(str).str.contains('공용', na=False)
+                    # 🌟 전유부 (호수 입력 시 - 우회 검색된 모든 세대를 최대 5장까지 뽑아냅니다)
+                    if ho_input:
+                        unique_pks = bld_df['관리대장PK'].unique() if '관리대장PK' in bld_df.columns else [None]
+                        
+                        shown_count = 0
+                        for pk in unique_pks:
+                            if shown_count >= 5:
+                                st.info("💡 우회 검색으로 너무 많은 동(세대)이 조회되어 상위 5개만 문서로 보여드립니다. 전체 내역은 맨 아래 원본 표를 확인하세요.")
+                                break
+                            shown_count += 1
+                            
+                            group_df = bld_df[bld_df['관리대장PK'] == pk] if pk else bld_df
+                            
+                            with st.container(border=True):
+                                if '전유공용구분' in group_df.columns:
+                                    is_jeonyu = group_df['전유공용구분'].astype(str).str.contains('전유', na=False)
+                                    is_gongyong = group_df['전유공용구분'].astype(str).str.contains('공용', na=False)
+                                    
+                                    전용_df = group_df[is_jeonyu]
+                                    공용_df = group_df[is_gongyong]
+                                    if 전용_df.empty: 전용_df = group_df
+                                else:
+                                    전용_df = group_df
+                                    공용_df = pd.DataFrame()
                                 
-                                전용_df = bld_df[is_jeonyu]
-                                공용_df = bld_df[is_gongyong]
-                                if 전용_df.empty: 전용_df = bld_df
-                            else:
-                                전용_df = bld_df
-                                공용_df = pd.DataFrame()
-                            
-                            def safe_float(val):
-                                try: return float(str(val).replace(',', '').strip())
-                                except: return 0.0
-                            
-                            area_col = '면적(㎡)' if '면적(㎡)' in bld_df.columns else ('area' if 'area' in bld_df.columns else None)
-                            
-                            if area_col:
-                                전용면적 = sum(safe_float(x) for x in 전용_df[area_col]) if not 전용_df.empty else 0.0
-                                공용면적 = sum(safe_float(x) for x in 공용_df[area_col]) if not 공용_df.empty else 0.0
-                            else:
-                                전용면적, 공용면적 = 0.0, 0.0
+                                def safe_float(val):
+                                    try: return float(str(val).replace(',', '').strip())
+                                    except: return 0.0
                                 
-                            계약면적 = 전용면적 + 공용면적
-                            
-                            main_row = 전용_df.iloc[0] if not 전용_df.empty else bld_df.iloc[0]
-                            
-                            addr = get_clean_val(main_row, '도로명주소', get_clean_val(main_row, '대지위치', '-'))
-                            
-                            b_nm = get_clean_val(main_row, '건물명', '')
-                            clean_d_input = ''.join(filter(str.isalnum, str(dong_input)))
-                            
-                            # 건물명에 동 이름이 이미 있다면 중복 출력 방지
-                            d_nm = get_clean_val(main_row, '동명칭', '')
-                            if clean_d_input and clean_d_input not in ['0', '없음'] and d_nm == '':
-                                if f"{clean_d_input}동" not in b_nm:
-                                    d_nm = f"{clean_d_input}동"
-                            
-                            clean_h_input = ''.join(filter(str.isalnum, str(ho_input))).replace('호', '')
-                            h_nm = get_clean_val(main_row, '호명칭', f'{clean_h_input}호')
-                            
-                            full_name = " ".join([x for x in [b_nm, d_nm, h_nm] if x])
-                            
-                            st.markdown(f"### 📄 집합건축물대장 [전유부] 요약")
-                            st.markdown(f"#### 📍 주소: {addr}")
-                            st.markdown(f"#### 🏢 명칭: {full_name}")
-                            st.divider()
-                            
-                            st.markdown(f"""
-                            | 구분 | 상세 내용 | 구분 | 상세 내용 |
-                            |:---:|---|:---:|---|
-                            | **주용도** | {get_clean_val(main_row, '주용도')} | **해당 층** | {get_clean_val(main_row, '해당층')} |
-                            | **전용면적** | <span style='color:#0066cc; font-weight:bold; font-size:1.1em;'>{전용면적:,.2f} ㎡</span> | **기타용도** | {get_clean_val(main_row, '기타용도')} |
-                            | **공용면적** | {공용면적:,.2f} ㎡ | **구조** | {get_clean_val(main_row, '구조')} |
-                            | **계약면적(총)**| <span style='color:#d93025; font-weight:bold; font-size:1.1em;'>{계약면적:,.2f} ㎡</span> | **대지권지분** | 등기부등본 확인 요망 |
-                            """, unsafe_allow_html=True)
-                            
-                            with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기"):
-                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다.")
-                                xray_df = bld_df.drop(columns=[c for c in hide_xray_cols if c in bld_df.columns])
-                                st.dataframe(xray_df)
-                            
-                        # 🌟 표제부 (건물 전체)
-                        else:
+                                area_col = '면적(㎡)' if '면적(㎡)' in group_df.columns else ('area' if 'area' in group_df.columns else None)
+                                
+                                if area_col:
+                                    전용면적 = sum(safe_float(x) for x in 전용_df[area_col]) if not 전용_df.empty else 0.0
+                                    공용면적 = sum(safe_float(x) for x in 공용_df[area_col]) if not 공용_df.empty else 0.0
+                                else:
+                                    전용면적, 공용면적 = 0.0, 0.0
+                                    
+                                계약면적 = 전용면적 + 공용면적
+                                
+                                main_row = 전용_df.iloc[0] if not 전용_df.empty else group_df.iloc[0]
+                                addr = get_clean_val(main_row, '도로명주소', get_clean_val(main_row, '대지위치', '-'))
+                                b_nm = get_clean_val(main_row, '건물명', '')
+                                
+                                clean_d_input = ''.join(filter(str.isalnum, str(dong_input)))
+                                d_nm = get_clean_val(main_row, '동명칭', '')
+                                if clean_d_input and clean_d_input not in ['0', '없음'] and d_nm == '':
+                                    if f"{clean_d_input}동" not in b_nm:
+                                        d_nm = f"{clean_d_input}동"
+                                
+                                clean_h_input = ''.join(filter(str.isalnum, str(ho_input))).replace('호', '')
+                                h_nm = get_clean_val(main_row, '호명칭', f'{clean_h_input}호')
+                                full_name = " ".join([x for x in [b_nm, d_nm, h_nm] if x])
+                                
+                                st.markdown(f"### 📄 집합건축물대장 [전유부] 요약")
+                                st.markdown(f"#### 📍 주소: {addr}")
+                                st.markdown(f"#### 🏢 명칭: {full_name}")
+                                st.divider()
+                                
+                                st.markdown(f"""
+                                | 구분 | 상세 내용 | 구분 | 상세 내용 |
+                                |:---:|---|:---:|---|
+                                | **주용도** | {get_clean_val(main_row, '주용도')} | **해당 층** | {get_clean_val(main_row, '해당층')} |
+                                | **전용면적** | <span style='color:#0066cc; font-weight:bold; font-size:1.1em;'>{전용면적:,.2f} ㎡</span> | **기타용도** | {get_clean_val(main_row, '기타용도')} |
+                                | **공용면적** | {공용면적:,.2f} ㎡ | **구조** | {get_clean_val(main_row, '구조')} |
+                                | **계약면적(총)**| <span style='color:#d93025; font-weight:bold; font-size:1.1em;'>{계약면적:,.2f} ㎡</span> | **대지권지분** | 등기부등본 확인 요망 |
+                                """, unsafe_allow_html=True)
+                                
+                        with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기"):
+                            st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터 전체입니다. 전산에 실제 등록된 '동명칭'을 직접 확인하실 수 있습니다.")
+                            xray_df = bld_df.drop(columns=[c for c in hide_xray_cols if c in bld_df.columns])
+                            st.dataframe(xray_df)
+
+                    # 🌟 표제부 (건물 전체)
+                    else:
+                        with st.container(border=True):
                             main_row = bld_df.iloc[0]
                             addr = get_clean_val(main_row, '도로명주소', get_clean_val(main_row, '대지위치', '-'))
                             bld_name = get_clean_val(main_row, '건물명', '')
@@ -524,10 +535,10 @@ with tab2:
                             | **세대/가구수**| {get_clean_val(main_row, '세대수', '0')}세대 / {get_clean_val(main_row, '가구수', '0')}가구 | **사용승인일** | {use_day_fmt} |
                             """, unsafe_allow_html=True)
                             
-                            with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기"):
-                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다.")
-                                xray_df = bld_df.drop(columns=[c for c in hide_xray_cols if c in bld_df.columns])
-                                st.dataframe(xray_df)
+                        with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기"):
+                            st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터 전체입니다. 전산에 실제 등록된 '동명칭'을 직접 확인하실 수 있습니다.")
+                            xray_df = bld_df.drop(columns=[c for c in hide_xray_cols if c in bld_df.columns])
+                            st.dataframe(xray_df)
                 else:
                     st.warning(f"해당 지번에 대한 건축물대장 정보가 없습니다. 지번이나 동/호수를 다시 한번 확인해주세요.")
             else:
