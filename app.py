@@ -167,14 +167,13 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수들 (NEW!)
+# 🌟 [기능 2] 건축물대장 처리 함수들 (전유부 & 양식 폼 장착!)
 # ==========================================
 def parse_address_for_bldrgst(address_str):
-    """ '서교동 산 400-3' 같은 문자를 파이썬이 이해할 수 있게 해체합니다. """
     parts = address_str.strip().split()
     if not parts: return None, None, None, None
         
-    plat_gb_cd = "0" # 0:대지, 1:산
+    plat_gb_cd = "0" 
     if "산" in parts:
         plat_gb_cd = "1"
         parts.remove("산")
@@ -197,7 +196,6 @@ def parse_address_for_bldrgst(address_str):
     return region_search_term, plat_gb_cd, bun, ji
 
 def get_full_bjdong_code(search_term):
-    """ 동 이름을 던지면 시군구(5자리)와 법정동(5자리) 코드를 한 번에 가져옵니다. """
     base_url = "https://apis.data.go.kr/1741000/StanReginCd/getStanReginCdList"
     url = f"{base_url}?serviceKey={DONG_API_KEY}&pageNo=1&numOfRows=10&type=json&locatadd_nm={search_term}"
     try:
@@ -212,24 +210,27 @@ def get_full_bjdong_code(search_term):
         return None, None, None
     except: return None, None, None
 
-def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji):
-    # 건축HUB 표제부 조회 API 주소
-    base_url = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo"
-    url = f"{base_url}?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={plat_gb_cd}&bun={bun}&ji={ji}&numOfRows=10&pageNo=1"
+def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_ho=""):
+    # 🌟 호수 입력 여부에 따라 '전유부'와 '표제부' API를 똑똑하게 구분해서 호출합니다.
+    if target_ho:
+        base_url = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposInfo" # 전유부
+    else:
+        base_url = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo" # 표제부
+
+    url = f"{base_url}?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={plat_gb_cd}&bun={bun}&ji={ji}&numOfRows=1000&pageNo=1"
     
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=15)
         content = response.text.strip()
         if not content.startswith('<'):
-            st.error(f"🚨 건축HUB 서버 응답 지연: 아직 API 키 동기화가 안 되었을 수 있습니다.")
-            with st.expander("원본 확인"): st.text(content)
+            st.error(f"🚨 건축HUB 서버 에러: {content}")
             return pd.DataFrame()
             
         xml_data = xmltodict.parse(response.content)
         
         if 'OpenAPI_ServiceResponse' in xml_data:
             err_msg = xml_data['OpenAPI_ServiceResponse'].get('cmmMsgHeader', {}).get('errMsg', '에러')
-            st.error(f"🚨 API 거절: {err_msg} (건축물대장 서비스 활용신청이 필요합니다.)")
+            st.error(f"🚨 API 거절: {err_msg}")
             return pd.DataFrame()
             
         items_dict = xml_data.get('response', {}).get('body', {}).get('items')
@@ -238,25 +239,19 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji):
             if isinstance(item_list, dict): item_list = [item_list]
             
             df = pd.DataFrame(item_list)
-            rename_dict = {
-                'bldNm': '건물명', 'dongNm': '동명칭', 'mainPurpsCdNm': '주용도', 'etcPurps': '기타용도',
-                'platArea': '대지면적(㎡)', 'archArea': '건축면적(㎡)', 'bcRat': '건폐율(%)', 'totArea': '연면적(㎡)',
-                'vlRatEstmTotArea': '용적률연면적(㎡)', 'vlRat': '용적률(%)', 'strctCdNm': '구조',
-                'grndFlrCnt': '지상층수', 'ugrndFlrCnt': '지하층수', 'useAprDay': '사용승인일'
-            }
-            df = df.rename(columns=rename_dict)
-            display_cols = ['건물명', '동명칭', '주용도', '기타용도', '대지면적(㎡)', '건축면적(㎡)', '건폐율(%)', '연면적(㎡)', '용적률연면적(㎡)', '용적률(%)', '구조', '지상층수', '지하층수', '사용승인일']
-            final_cols = [c for c in display_cols if c in df.columns]
             
-            # X-ray: 못 읽은 영어 태그 맨 뒤로 던지기
-            extra_cols = [c for c in df.columns if c not in final_cols and c not in ['rnum', 'platPlc', 'sigunguCd', 'bjdongCd', 'platGbCd', 'bun', 'ji', 'mgmBldrgstPk']]
-            final_cols.extend(extra_cols)
-            return df[final_cols]
+            # 🌟 전유부(특정 호수)를 찾을 경우, 해당 호수만 필터링합니다.
+            if target_ho and not df.empty:
+                if 'hoNm' in df.columns:
+                    df = df[df['hoNm'].str.contains(target_ho, na=False)]
+                if 'exposPubuseGbCdNm' in df.columns:
+                    # '전유' 부분 면적만 깔끔하게 가져옵니다.
+                    df = df[df['exposPubuseGbCdNm'] == '전유']
+                    
+            return df
         else:
-            st.warning("해당 지번에 건축물대장(표제부) 정보가 없습니다. 지번이 정확한지 확인해주세요.")
             return pd.DataFrame()
     except Exception as e:
-        st.error(f"🚨 조회 중 에러 발생: {e}")
         return pd.DataFrame()
 
 
@@ -266,9 +261,9 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji):
 st.set_page_config(page_title="부동산 올인원 봇", layout="wide")
 st.title("🏢 부동산 올인원 실거래가 & 건축물대장 봇")
 
-tab1, tab2 = st.tabs(["💰 실거래가 조회", "📋 건축물대장 (표제부) 요약 조회"])
+tab1, tab2 = st.tabs(["💰 실거래가 조회", "📋 건축물대장 (표제/전유부) 실제 양식 조회"])
 
-# ----------------- [탭 1] 실거래가 -----------------
+# ----------------- [탭 1] 실거래가 (기존 내용 그대로) -----------------
 with tab1:
     current_date = pd.Timestamp.now()
     current_month_str = current_date.strftime('%Y%m') 
@@ -276,10 +271,8 @@ with tab1:
 
     with st.form("search_form"):
         col1, col2 = st.columns(2)
-        with col1:
-            property_type = st.selectbox("매물 종류", ["아파트", "아파트분양권", "오피스텔", "연립/다세대", "단독/다가구", "상업/업무용", "공장 및 창고", "토지"])
-        with col2:
-            transaction_type = st.selectbox("거래 종류", ["매매", "전월세"])
+        with col1: property_type = st.selectbox("매물 종류", ["아파트", "아파트분양권", "오피스텔", "연립/다세대", "단독/다가구", "상업/업무용", "공장 및 창고", "토지"])
+        with col2: transaction_type = st.selectbox("거래 종류", ["매매", "전월세"])
             
         col3, col4, col5, col6 = st.columns(4)
         with col3: sigungu_name = st.text_input("시/군/구 (예: 서초구)", value="서초구")
@@ -310,14 +303,20 @@ with tab1:
             else:
                 st.error("지역을 찾을 수 없습니다. 오타가 없는지 확인해주세요.")
 
-# ----------------- [탭 2] 건축물대장 -----------------
+# ----------------- [탭 2] 건축물대장 (문서 디자인 폼 적용) -----------------
 with tab2:
-    st.subheader("📋 특정 지번 건축물대장 (표제부) 단건 조회")
-    st.info("💡 팁: '구', '동', '지번'을 띄어쓰기로 입력하세요. 산 지번도 가능합니다. (예: 서초구 서초동 1319-11, 마포구 서교동 산 11-1)")
+    st.subheader("📋 특정 지번 건축물대장 1초 요약 문서")
+    st.info("💡 아파트, 다세대주택(빌라) 등은 **'호수'**를 입력하시면 해당 세대의 **[전유부]**가 조회됩니다. 호수를 비워두면 건물 전체의 **[표제부]**가 조회됩니다.")
     
     with st.form("bldrgst_form"):
-        address_input = st.text_input("조회할 텍스트 주소 입력", placeholder="예: 서교동 400-3")
-        bld_submitted = st.form_submit_button("🔍 건축물대장 초간단 조회하기")
+        # 🌟 호수를 따로 입력받는 칸을 추가했습니다.
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            address_input = st.text_input("조회할 텍스트 주소 (필수)", placeholder="예: 상도동 360-4 또는 서초동 산 11-1")
+        with col2:
+            ho_input = st.text_input("호수 (선택)", placeholder="예: 202")
+            
+        bld_submitted = st.form_submit_button("🔍 건축물대장 요약 문서 열람")
         
     if bld_submitted and address_input:
         region_search_term, plat_gb_cd, bun, ji = parse_address_for_bldrgst(address_input)
@@ -328,13 +327,54 @@ with tab2:
             sgg_cd, bjdong_cd, full_loc_name = get_full_bjdong_code(region_search_term)
             
             if sgg_cd and bjdong_cd:
-                st.success(f"✅ 주소 파싱 완료: {full_loc_name} (대지구분:{plat_gb_cd}, 본번:{bun}, 부번:{ji})")
-                
-                # 데이터 긁어오기!
-                bld_df = get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji)
+                bld_df = get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, ho_input)
                 
                 if not bld_df.empty:
-                    bld_df.index = range(1, len(bld_df) + 1)
-                    st.dataframe(bld_df, use_container_width=True)
+                    row = bld_df.iloc[0] # 첫 번째 검색 결과를 가져옵니다.
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    
+                    # 🌟 표가 아닌, 실제 문서 양식처럼 깔끔하게 디자인된 카드(Container) 형태로 출력합니다!
+                    with st.container(border=True):
+                        # 전유부(호수) 조회일 경우
+                        if ho_input:
+                            st.markdown(f"### 📄 건축물대장 [전유부] 요약")
+                            bld_name = row.get('bldNm', '') if row.get('bldNm') else ''
+                            dong_name = row.get('dongNm', '') if row.get('dongNm') else ''
+                            ho_name = row.get('hoNm', '') if row.get('hoNm') else ''
+                            st.markdown(f"#### 📍 {full_loc_name} {bun}-{ji} {bld_name} {dong_name} {ho_name}")
+                            st.divider()
+                            
+                            c1, c2, c3 = st.columns(3)
+                            c1.metric("해당 층수", row.get('flrNoNm', '-'))
+                            c2.metric("전유 주용도", row.get('mainPurpsCdNm', '-'))
+                            c3.metric("전용면적", f"{row.get('area', '-')} ㎡")
+                            
+                        # 표제부(건물 전체) 조회일 경우
+                        else:
+                            st.markdown(f"### 📄 건축물대장 [표제부] 요약")
+                            bld_name = f" | {row.get('bldNm')}" if row.get('bldNm') else ""
+                            st.markdown(f"#### 📍 {full_loc_name} {bun}-{ji} {bld_name}")
+                            st.divider()
+                            
+                            c1, c2, c3 = st.columns(3)
+                            c1.metric("주용도", row.get('mainPurpsCdNm', '-'))
+                            c2.metric("대지면적", f"{row.get('platArea', '-')} ㎡")
+                            c3.metric("연면적", f"{row.get('totArea', '-')} ㎡")
+
+                            c4, c5, c6 = st.columns(3)
+                            c4.metric("건축면적", f"{row.get('archArea', '-')} ㎡")
+                            c5.metric("건폐율", f"{row.get('bcRat', '-')} %")
+                            c6.metric("용적률", f"{row.get('vlRat', '-')} %")
+
+                            c7, c8, c9 = st.columns(3)
+                            c7.metric("규모", f"지하 {row.get('ugrndFlrCnt', '0')}층 / 지상 {row.get('grndFlrCnt', '0')}층")
+                            c8.metric("구조", row.get('strctCdNm', '-'))
+                            
+                            use_day = str(row.get('useAprDay', '-'))
+                            use_day_fmt = f"{use_day[:4]}년 {use_day[4:6]}월 {use_day[6:8]}일" if len(use_day)==8 else use_day
+                            c9.metric("사용승인일", use_day_fmt)
+                            
+                else:
+                    st.warning(f"해당 지번({full_loc_name})에 대한 건축물대장 정보가 없습니다. 지번이나 호수를 다시 한번 확인해주세요.")
             else:
-                st.error(f"'{region_search_term}'에 해당하는 지역을 찾을 수 없습니다. 법정동을 정확히 적어주세요.")
+                st.error("해당하는 지역을 찾을 수 없습니다.")
