@@ -167,7 +167,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수들 (전유부 완벽 호환 & 정보 싹쓸이!)
+# 🌟 [기능 2] 건축물대장 처리 함수 (실제 문서 양식 & 면적 자동계산!)
 # ==========================================
 def parse_address_for_bldrgst(address_str):
     parts = address_str.strip().split()
@@ -212,9 +212,9 @@ def get_full_bjdong_code(search_term):
 
 def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_ho=""):
     if target_ho:
-        base_url = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposInfo" # 전유부 API
+        base_url = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposInfo" 
     else:
-        base_url = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo" # 표제부 API
+        base_url = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo" 
 
     url = f"{base_url}?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={plat_gb_cd}&bun={bun}&ji={ji}&numOfRows=1000&pageNo=1"
     
@@ -222,7 +222,7 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_ho=""):
         response = requests.get(url, timeout=15)
         content = response.text.strip()
         if not content.startswith('<'):
-            st.error(f"🚨 건축HUB 서버 에러: 데이터가 없거나 서버 지연입니다.")
+            st.error(f"🚨 서버 지연: {content}")
             return pd.DataFrame()
             
         xml_data = xmltodict.parse(response.content)
@@ -239,7 +239,7 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_ho=""):
             
             df = pd.DataFrame(item_list)
             
-            # 🌟 전유부 호수 스마트 필터링 ('301'만 입력해도 '제301호', '301호' 등 모두 찾아냅니다)
+            # 호수 스마트 필터링
             if target_ho and not df.empty and 'hoNm' in df.columns:
                 search_str = ''.join(filter(str.isalnum, target_ho))
                 def match_ho(x):
@@ -247,19 +247,20 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_ho=""):
                     return search_str in clean_x
                 df = df[df['hoNm'].apply(match_ho)]
             
-            # 🌟 국토부 API가 던져주는 약 30개의 모든 정보를 한글로 100% 번역하는 사전!
+            # 🌟 꼭 필요한 실무 데이터만 완벽하게 한글 번역
             rename_dict = {
                 'bldNm': '건물명', 'dongNm': '동명칭', 'hoNm': '호명칭',
                 'mainPurpsCdNm': '주용도', 'etcPurps': '기타용도',
                 'platArea': '대지면적(㎡)', 'archArea': '건축면적(㎡)', 'bcRat': '건폐율(%)',
                 'totArea': '연면적(㎡)', 'vlRatEstmTotArea': '용적률산정연면적(㎡)', 'vlRat': '용적률(%)',
-                'strctCdNm': '구조명', 'etcStrct': '기타구조', 'roofCdNm': '지붕명', 'etcRoof': '기타지붕',
+                'strctCdNm': '구조', 'roofCdNm': '지붕', 'heit': '높이(m)',
                 'grndFlrCnt': '지상층수', 'ugrndFlrCnt': '지하층수',
-                'stcnsDay': '착공일', 'useAprDay': '사용승인일', 'prmsDay': '허가일',
-                'hhldCnt': '세대수', 'fmlyCnt': '가구수', 'hoCnt': '호수',
-                'itctCnt': '승용승강기대수', 'emgenUseElvtCnt': '비상승강기대수',
+                'useAprDay': '사용승인일', 'hhldCnt': '세대수', 'fmlyCnt': '가구수',
+                'rideUseElvtCnt': '승용승강기', 'emgenUseElvtCnt': '비상승강기',
+                'oudrMechUtcnt': '옥외기계식', 'oudrAutoUtcnt': '옥외자주식',
+                'indrMechUtcnt': '옥내기계식', 'indrAutoUtcnt': '옥내자주식',
                 'platPlc': '대지위치', 'newPlatPlc': '도로명주소',
-                'flrNoNm': '해당층', 'exposPubuseGbCdNm': '전유/공용구분', 'area': '면적(㎡)'
+                'flrNoNm': '해당층', 'exposPubuseGbCdNm': '전유공용구분', 'area': '면적(㎡)'
             }
             df = df.rename(columns=rename_dict)
             return df
@@ -317,9 +318,9 @@ with tab1:
             else:
                 st.error("지역을 찾을 수 없습니다. 오타가 없는지 확인해주세요.")
 
-# ----------------- [탭 2] 건축물대장 (다이나믹 문서 생성기 적용) -----------------
+# ----------------- [탭 2] 건축물대장 (실제 문서 폼 적용!) -----------------
 with tab2:
-    st.subheader("📋 특정 지번 건축물대장 초정밀 요약 문서")
+    st.subheader("📋 특정 지번 건축물대장 (표제/전유부) 실제 양식")
     st.info("💡 아파트, 다세대주택(빌라) 등은 **'호수'**를 입력하시면 해당 세대의 **[전유부]**가 조회됩니다. 호수를 비워두면 건물 전체의 **[표제부]**가 조회됩니다.")
     
     with st.form("bldrgst_form"):
@@ -345,40 +346,65 @@ with tab2:
                 if not bld_df.empty:
                     st.markdown("<br>", unsafe_allow_html=True)
                     
-                    # 🌟 지정된 항목만 보여주는 것이 아니라, 국토부가 준 '모든' 정보를 화면에 꽉 차게 쏟아냅니다.
-                    for idx, row in bld_df.iterrows():
-                        # 화면에 굳이 띄울 필요 없는 시스템용 영문 암호들만 숨깁니다.
-                        ignore_cols = ['rnum', 'sigunguCd', 'bjdongCd', 'platGbCd', 'bun', 'ji', 'mgmBldrgstPk', 'regstrGbCd', 'regstrKindCd', 'mainPurpsCd', 'strctCd', 'roofCd']
-                        
-                        with st.container(border=True):
-                            doc_type = "[전유부]" if ho_input else "[표제부]"
-                            ho_title = f" {row.get('호명칭', '')}" if '호명칭' in row else ""
-                            bld_name = f" | {row.get('건물명', '')}" if pd.notna(row.get('건물명')) and row.get('건물명') else ""
+                    with st.container(border=True):
+                        # 🌟 전유부 (호수 입력 시)
+                        if ho_input:
+                            전용_df = bld_df[bld_df['전유공용구분'] == '전유']
+                            공용_df = bld_df[bld_df['전유공용구분'] == '공용']
                             
-                            st.markdown(f"### 📄 건축물대장 {doc_type} 요약")
-                            st.markdown(f"#### 📍 {full_loc_name} {bun}-{ji}{bld_name}{ho_title}")
+                            # 여러 줄로 나뉜 면적을 깔끔하게 자동 합산
+                            전용면적 = 전용_df['면적(㎡)'].astype(float).sum() if not 전용_df.empty else 0
+                            공용면적 = 공용_df['면적(㎡)'].astype(float).sum() if not 공용_df.empty else 0
+                            계약면적 = 전용면적 + 공용면적
+                            
+                            main_row = 전용_df.iloc[0] if not 전용_df.empty else bld_df.iloc[0]
+                            
+                            addr = main_row.get('도로명주소', main_row.get('대지위치', '-'))
+                            full_name = f"{main_row.get('건물명', '')} {main_row.get('동명칭', '')} {main_row.get('호명칭', f'{ho_input}호')}".strip()
+                            
+                            st.markdown(f"### 📄 집합건축물대장 [전유부] 요약")
+                            st.markdown(f"#### 📍 주소: {addr}")
+                            st.markdown(f"#### 🏢 명칭: {full_name}")
                             st.divider()
                             
-                            # 빈칸이 아닌 진짜 데이터만 골라냅니다.
-                            display_data = {}
-                            for col, val in row.items():
-                                if col not in ignore_cols and pd.notna(val) and val != "" and val != "None":
-                                    # 날짜(예: 20240101)를 보기 좋게 '년 월 일'로 깎아줍니다.
-                                    if '일' in col and str(val).isdigit() and len(str(val)) == 8:
-                                        val = f"{str(val)[:4]}년 {str(val)[4:6]}월 {str(val)[6:]}일"
-                                    display_data[col] = val
+                            # 🌟 마크다운 표로 글씨 잘림 방지 및 실제 공문서 느낌 구현
+                            st.markdown(f"""
+                            | 구분 | 상세 내용 | 구분 | 상세 내용 |
+                            |:---:|---|:---:|---|
+                            | **주용도** | {main_row.get('주용도', '-')} | **해당 층** | {main_row.get('해당층', '-')} |
+                            | **전용면적** | <span style='color:#0066cc; font-weight:bold; font-size:1.1em;'>{전용면적:,.2f} ㎡</span> | **기타용도** | {main_row.get('기타용도', '-')} |
+                            | **공용면적** | {공용면적:,.2f} ㎡ | **구조** | {main_row.get('구조', '-')} |
+                            | **계약면적(총)**| <span style='color:#d93025; font-weight:bold; font-size:1.1em;'>{계약면적:,.2f} ㎡</span> | **대지권지분** | 등기부등본 확인 요망 |
+                            """, unsafe_allow_html=True)
                             
-                            # 4열(Column)로 균등하게 정보를 배치하여 정보량이 꽉 찬 문서 느낌을 줍니다.
-                            cols = st.columns(4)
-                            col_idx = 0
-                            for key, value in display_data.items():
-                                cols[col_idx % 4].metric(label=key, value=str(value))
-                                col_idx += 1
-                                
-                        # 표제부는 건물이 통째로 1개 나오므로 첫 번째 결과만 표시, 전유부는 공용/전유 모두 표시
-                        if not ho_input:
-                            break
+                        # 🌟 표제부 (건물 전체)
+                        else:
+                            main_row = bld_df.iloc[0]
+                            addr = main_row.get('도로명주소', main_row.get('대지위치', '-'))
+                            bld_name = main_row.get('건물명', '')
+                            
+                            use_day = str(main_row.get('사용승인일', '-'))
+                            use_day_fmt = f"{use_day[:4]}년 {use_day[4:6]}월 {use_day[6:8]}일" if len(use_day)==8 else use_day
+                            
+                            # 흩어진 주차대수 합산
+                            total_parking = sum([int(main_row.get(p, 0)) for p in ['옥외기계식', '옥외자주식', '옥내기계식', '옥내자주식'] if pd.notna(main_row.get(p)) and str(main_row.get(p)).isdigit()])
+                            
+                            st.markdown(f"### 📄 일반건축물대장 [표제부] 요약")
+                            st.markdown(f"#### 📍 주소: {addr}")
+                            if bld_name: st.markdown(f"#### 🏢 명칭: {bld_name}")
+                            st.divider()
+                            
+                            st.markdown(f"""
+                            | 구분 | 상세 내용 | 구분 | 상세 내용 |
+                            |:---:|---|:---:|---|
+                            | **주용도** | {main_row.get('주용도', '-')} | **규모** | 지하 {main_row.get('지하층수', '0')}층 / 지상 {main_row.get('지상층수', '0')}층 |
+                            | **대지면적** | {main_row.get('대지면적(㎡)', '-')} ㎡ | **구조 / 지붕** | {main_row.get('구조', '-')} / {main_row.get('지붕', '-')} |
+                            | **연면적** | {main_row.get('연면적(㎡)', '-')} ㎡ | **높이** | {main_row.get('높이(m)', '-')} m |
+                            | **건축면적** | {main_row.get('건축면적(㎡)', '-')} ㎡ | **승강기** | 승용 {main_row.get('승용승강기', '0')}대 / 비상 {main_row.get('비상승강기', '0')}대 |
+                            | **건폐율/용적률**| {main_row.get('건폐율(%)', '-')} % / {main_row.get('용적률(%)', '-')} % | **총 주차대수** | {total_parking} 대 |
+                            | **세대/가구수**| {main_row.get('세대수', '0')}세대 / {main_row.get('가구수', '0')}가구 | **사용승인일** | {use_day_fmt} |
+                            """, unsafe_allow_html=True)
                 else:
-                    st.warning(f"해당 지번({full_loc_name})에 대한 건축물대장 정보가 없습니다. 지번이나 호수를 다시 한번 확인해주세요.")
+                    st.warning(f"해당 지번에 대한 건축물대장 정보가 없습니다. 지번이나 호수를 확인해주세요.")
             else:
                 st.error("해당하는 지역을 찾을 수 없습니다.")
