@@ -167,7 +167,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수들 (전유부 & 양식 폼 장착!)
+# 🌟 [기능 2] 건축물대장 처리 함수들 (전유부 완벽 호환 & 정보 싹쓸이!)
 # ==========================================
 def parse_address_for_bldrgst(address_str):
     parts = address_str.strip().split()
@@ -211,11 +211,10 @@ def get_full_bjdong_code(search_term):
     except: return None, None, None
 
 def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_ho=""):
-    # 🌟 호수 입력 여부에 따라 '전유부'와 '표제부' API를 똑똑하게 구분해서 호출합니다.
     if target_ho:
-        base_url = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposInfo" # 전유부
+        base_url = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposInfo" # 전유부 API
     else:
-        base_url = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo" # 표제부
+        base_url = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo" # 표제부 API
 
     url = f"{base_url}?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={plat_gb_cd}&bun={bun}&ji={ji}&numOfRows=1000&pageNo=1"
     
@@ -223,7 +222,7 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_ho=""):
         response = requests.get(url, timeout=15)
         content = response.text.strip()
         if not content.startswith('<'):
-            st.error(f"🚨 건축HUB 서버 에러: {content}")
+            st.error(f"🚨 건축HUB 서버 에러: 데이터가 없거나 서버 지연입니다.")
             return pd.DataFrame()
             
         xml_data = xmltodict.parse(response.content)
@@ -240,14 +239,29 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_ho=""):
             
             df = pd.DataFrame(item_list)
             
-            # 🌟 전유부(특정 호수)를 찾을 경우, 해당 호수만 필터링합니다.
-            if target_ho and not df.empty:
-                if 'hoNm' in df.columns:
-                    df = df[df['hoNm'].str.contains(target_ho, na=False)]
-                if 'exposPubuseGbCdNm' in df.columns:
-                    # '전유' 부분 면적만 깔끔하게 가져옵니다.
-                    df = df[df['exposPubuseGbCdNm'] == '전유']
-                    
+            # 🌟 전유부 호수 스마트 필터링 ('301'만 입력해도 '제301호', '301호' 등 모두 찾아냅니다)
+            if target_ho and not df.empty and 'hoNm' in df.columns:
+                search_str = ''.join(filter(str.isalnum, target_ho))
+                def match_ho(x):
+                    clean_x = ''.join(filter(str.isalnum, str(x)))
+                    return search_str in clean_x
+                df = df[df['hoNm'].apply(match_ho)]
+            
+            # 🌟 국토부 API가 던져주는 약 30개의 모든 정보를 한글로 100% 번역하는 사전!
+            rename_dict = {
+                'bldNm': '건물명', 'dongNm': '동명칭', 'hoNm': '호명칭',
+                'mainPurpsCdNm': '주용도', 'etcPurps': '기타용도',
+                'platArea': '대지면적(㎡)', 'archArea': '건축면적(㎡)', 'bcRat': '건폐율(%)',
+                'totArea': '연면적(㎡)', 'vlRatEstmTotArea': '용적률산정연면적(㎡)', 'vlRat': '용적률(%)',
+                'strctCdNm': '구조명', 'etcStrct': '기타구조', 'roofCdNm': '지붕명', 'etcRoof': '기타지붕',
+                'grndFlrCnt': '지상층수', 'ugrndFlrCnt': '지하층수',
+                'stcnsDay': '착공일', 'useAprDay': '사용승인일', 'prmsDay': '허가일',
+                'hhldCnt': '세대수', 'fmlyCnt': '가구수', 'hoCnt': '호수',
+                'itctCnt': '승용승강기대수', 'emgenUseElvtCnt': '비상승강기대수',
+                'platPlc': '대지위치', 'newPlatPlc': '도로명주소',
+                'flrNoNm': '해당층', 'exposPubuseGbCdNm': '전유/공용구분', 'area': '면적(㎡)'
+            }
+            df = df.rename(columns=rename_dict)
             return df
         else:
             return pd.DataFrame()
@@ -303,18 +317,17 @@ with tab1:
             else:
                 st.error("지역을 찾을 수 없습니다. 오타가 없는지 확인해주세요.")
 
-# ----------------- [탭 2] 건축물대장 (문서 디자인 폼 적용) -----------------
+# ----------------- [탭 2] 건축물대장 (다이나믹 문서 생성기 적용) -----------------
 with tab2:
-    st.subheader("📋 특정 지번 건축물대장 1초 요약 문서")
+    st.subheader("📋 특정 지번 건축물대장 초정밀 요약 문서")
     st.info("💡 아파트, 다세대주택(빌라) 등은 **'호수'**를 입력하시면 해당 세대의 **[전유부]**가 조회됩니다. 호수를 비워두면 건물 전체의 **[표제부]**가 조회됩니다.")
     
     with st.form("bldrgst_form"):
-        # 🌟 호수를 따로 입력받는 칸을 추가했습니다.
         col1, col2 = st.columns([3, 1])
         with col1:
             address_input = st.text_input("조회할 텍스트 주소 (필수)", placeholder="예: 상도동 360-4 또는 서초동 산 11-1")
         with col2:
-            ho_input = st.text_input("호수 (선택)", placeholder="예: 202")
+            ho_input = st.text_input("호수 (선택)", placeholder="예: 301")
             
         bld_submitted = st.form_submit_button("🔍 건축물대장 요약 문서 열람")
         
@@ -330,50 +343,41 @@ with tab2:
                 bld_df = get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, ho_input)
                 
                 if not bld_df.empty:
-                    row = bld_df.iloc[0] # 첫 번째 검색 결과를 가져옵니다.
                     st.markdown("<br>", unsafe_allow_html=True)
                     
-                    # 🌟 표가 아닌, 실제 문서 양식처럼 깔끔하게 디자인된 카드(Container) 형태로 출력합니다!
-                    with st.container(border=True):
-                        # 전유부(호수) 조회일 경우
-                        if ho_input:
-                            st.markdown(f"### 📄 건축물대장 [전유부] 요약")
-                            bld_name = row.get('bldNm', '') if row.get('bldNm') else ''
-                            dong_name = row.get('dongNm', '') if row.get('dongNm') else ''
-                            ho_name = row.get('hoNm', '') if row.get('hoNm') else ''
-                            st.markdown(f"#### 📍 {full_loc_name} {bun}-{ji} {bld_name} {dong_name} {ho_name}")
+                    # 🌟 지정된 항목만 보여주는 것이 아니라, 국토부가 준 '모든' 정보를 화면에 꽉 차게 쏟아냅니다.
+                    for idx, row in bld_df.iterrows():
+                        # 화면에 굳이 띄울 필요 없는 시스템용 영문 암호들만 숨깁니다.
+                        ignore_cols = ['rnum', 'sigunguCd', 'bjdongCd', 'platGbCd', 'bun', 'ji', 'mgmBldrgstPk', 'regstrGbCd', 'regstrKindCd', 'mainPurpsCd', 'strctCd', 'roofCd']
+                        
+                        with st.container(border=True):
+                            doc_type = "[전유부]" if ho_input else "[표제부]"
+                            ho_title = f" {row.get('호명칭', '')}" if '호명칭' in row else ""
+                            bld_name = f" | {row.get('건물명', '')}" if pd.notna(row.get('건물명')) and row.get('건물명') else ""
+                            
+                            st.markdown(f"### 📄 건축물대장 {doc_type} 요약")
+                            st.markdown(f"#### 📍 {full_loc_name} {bun}-{ji}{bld_name}{ho_title}")
                             st.divider()
                             
-                            c1, c2, c3 = st.columns(3)
-                            c1.metric("해당 층수", row.get('flrNoNm', '-'))
-                            c2.metric("전유 주용도", row.get('mainPurpsCdNm', '-'))
-                            c3.metric("전용면적", f"{row.get('area', '-')} ㎡")
+                            # 빈칸이 아닌 진짜 데이터만 골라냅니다.
+                            display_data = {}
+                            for col, val in row.items():
+                                if col not in ignore_cols and pd.notna(val) and val != "" and val != "None":
+                                    # 날짜(예: 20240101)를 보기 좋게 '년 월 일'로 깎아줍니다.
+                                    if '일' in col and str(val).isdigit() and len(str(val)) == 8:
+                                        val = f"{str(val)[:4]}년 {str(val)[4:6]}월 {str(val)[6:]}일"
+                                    display_data[col] = val
                             
-                        # 표제부(건물 전체) 조회일 경우
-                        else:
-                            st.markdown(f"### 📄 건축물대장 [표제부] 요약")
-                            bld_name = f" | {row.get('bldNm')}" if row.get('bldNm') else ""
-                            st.markdown(f"#### 📍 {full_loc_name} {bun}-{ji} {bld_name}")
-                            st.divider()
-                            
-                            c1, c2, c3 = st.columns(3)
-                            c1.metric("주용도", row.get('mainPurpsCdNm', '-'))
-                            c2.metric("대지면적", f"{row.get('platArea', '-')} ㎡")
-                            c3.metric("연면적", f"{row.get('totArea', '-')} ㎡")
-
-                            c4, c5, c6 = st.columns(3)
-                            c4.metric("건축면적", f"{row.get('archArea', '-')} ㎡")
-                            c5.metric("건폐율", f"{row.get('bcRat', '-')} %")
-                            c6.metric("용적률", f"{row.get('vlRat', '-')} %")
-
-                            c7, c8, c9 = st.columns(3)
-                            c7.metric("규모", f"지하 {row.get('ugrndFlrCnt', '0')}층 / 지상 {row.get('grndFlrCnt', '0')}층")
-                            c8.metric("구조", row.get('strctCdNm', '-'))
-                            
-                            use_day = str(row.get('useAprDay', '-'))
-                            use_day_fmt = f"{use_day[:4]}년 {use_day[4:6]}월 {use_day[6:8]}일" if len(use_day)==8 else use_day
-                            c9.metric("사용승인일", use_day_fmt)
-                            
+                            # 4열(Column)로 균등하게 정보를 배치하여 정보량이 꽉 찬 문서 느낌을 줍니다.
+                            cols = st.columns(4)
+                            col_idx = 0
+                            for key, value in display_data.items():
+                                cols[col_idx % 4].metric(label=key, value=str(value))
+                                col_idx += 1
+                                
+                        # 표제부는 건물이 통째로 1개 나오므로 첫 번째 결과만 표시, 전유부는 공용/전유 모두 표시
+                        if not ho_input:
+                            break
                 else:
                     st.warning(f"해당 지번({full_loc_name})에 대한 건축물대장 정보가 없습니다. 지번이나 호수를 다시 한번 확인해주세요.")
             else:
