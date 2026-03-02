@@ -167,7 +167,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수 (대단지 싹쓸이 & 동/호수 정밀 타격 엔진!)
+# 🌟 [기능 2] 건축물대장 처리 함수 (무적의 필터링 & 대단지 싹쓸이 엔진!)
 # ==========================================
 import re # 정밀 타격을 위한 정규식 엔진 탑재
 
@@ -220,7 +220,7 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
 
     all_items = []
     
-    # 🌟 대단지 아파트를 위해 페이지를 1장부터 5장(5000건)까지 알아서 넘겨가며 싹쓸이합니다!
+    # 대단지 아파트를 위해 페이지를 5장(5000건)까지 알아서 넘겨가며 싹쓸이합니다!
     for page in range(1, 6):
         url = f"{base_url}?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={plat_gb_cd}&bun={bun}&ji={ji}&numOfRows=1000&pageNo={page}"
         try:
@@ -245,7 +245,6 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
                 if isinstance(item_list, dict): item_list = [item_list]
                 all_items.extend(item_list)
                 
-                # 국토부가 알려주는 총 데이터 개수를 보고, 다 가져왔으면 반복문을 멈춥니다.
                 total_count = int(body.get('totalCount', 0))
                 if page * 1000 >= total_count:
                     break 
@@ -259,18 +258,30 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
         
     df = pd.DataFrame(all_items)
     
-    # 🌟 정밀 타격 필터링 엔진 (301호 찾을 때 1301호 낚임 완벽 방지)
+    # 🌟 무적의 정밀 타격 엔진 (1301호 낚임 완벽 차단 및 0301=301호 완벽 인식)
     def is_exact_match(target, api_val):
         if not target: return True
-        t_clean = ''.join(filter(str.isalnum, str(target))).upper()
+        
+        # 유저가 '101동', '301호'라고 쳐도 알아서 숫자/기본문자만 남김
+        t_clean = ''.join(filter(str.isalnum, str(target))).upper().replace('동','').replace('호','').replace('제','')
         if not t_clean or t_clean in ['0', '없음', 'NONE', 'NULL']: return True
         if pd.isna(api_val) or str(api_val).strip() in ['None', '', 'nan']: return False
         
-        # '제301호' -> '301' 만 남겨서 완벽하게 일치하는 단어만 찾습니다.
-        a_str = str(api_val).upper().replace('제', ' ').replace('동', ' ').replace('호', ' ')
+        api_str = str(api_val).upper()
+        
+        # 1. 숫자만 있는 경우 (1301호 안에서 301호 찾는 헛발질 완벽 방어)
+        if t_clean.isdigit():
+            nums_in_api = re.findall(r'\d+', api_str)
+            for n in nums_in_api:
+                if int(n) == int(t_clean): return True
+                
+        # 2. 알파벳/문자가 섞인 경우 (예: A동, 101A동)
+        a_str = api_str.replace('제', ' ').replace('동', ' ').replace('호', ' ')
         tokens = re.findall(r'[A-Z0-9가-힣]+', a_str)
-        tokens_alnum = re.findall(r'[A-Z0-9]+', a_str)
-        return (t_clean in tokens) or (t_clean in tokens_alnum) or (t_clean == ''.join(filter(str.isalnum, a_str)))
+        for t in tokens:
+            if t == t_clean: return True
+            
+        return False
 
     if target_dong and 'dongNm' in df.columns:
         df = df[df['dongNm'].apply(lambda x: is_exact_match(target_dong, x))]
@@ -361,7 +372,9 @@ with tab1:
 # ----------------- [탭 2] 건축물대장 (실제 문서 폼 적용!) -----------------
 with tab2:
     st.subheader("📋 특정 지번 건축물대장 (표제/전유부) 요약")
-    st.info("💡 대단지 아파트는 **'동'**과 **'호수'**를 함께 입력하시고, 동이 없는 건물은 동 칸을 비워두세요.")
+    
+    # 🌟 대단지 아파트를 위한 경고 알림 장착!
+    st.info("💡 **[중요]** 대단지 아파트는 동별로 지번(외필지)이 다를 수 있습니다. 검색이 안 될 경우, 네이버 지도나 디스코에서 해당 동을 직접 클릭해 **'정확한 지번'**을 확인 후 입력해 보세요.")
     
     with st.form("bldrgst_form"):
         col1, col2, col3 = st.columns([2, 1, 1])
@@ -434,7 +447,11 @@ with tab2:
                             b_nm = get_clean_val(main_row, '건물명', '')
                             clean_d_input = ''.join(filter(str.isalnum, str(dong_input)))
                             d_nm = get_clean_val(main_row, '동명칭', f'{dong_input}동' if clean_d_input and clean_d_input not in ['0', '없음'] else '')
-                            h_nm = get_clean_val(main_row, '호명칭', f'{ho_input}호')
+                            
+                            # 호수 출력 시 '제'나 '호'가 중복으로 붙지 않게 깔끔하게 정리
+                            clean_h_input = ''.join(filter(str.isalnum, str(ho_input))).replace('호', '')
+                            h_nm = get_clean_val(main_row, '호명칭', f'{clean_h_input}호')
+                            
                             full_name = " ".join([x for x in [b_nm, d_nm, h_nm] if x])
                             
                             st.markdown(f"### 📄 집합건축물대장 [전유부] 요약")
