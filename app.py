@@ -167,7 +167,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수 (3중 지번 융단폭격 & 엄격 필터링!)
+# 🌟 [기능 2] 건축물대장 처리 함수 (에러 방어막 & 3중 융단폭격!)
 # ==========================================
 import re 
 import pandas as pd
@@ -218,8 +218,6 @@ def get_full_bjdong_code(search_term):
     except: return None, None, None
 
 def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong="", target_ho=""):
-    # 🌟 [특급 융단폭격 엔진] 국토부가 데이터를 어디에 숨겼는지 모르니, 
-    # 일반(0), 블록(2), 로트(3) 지번을 모두 찔러서 한 번에 싹 다 긁어옵니다!
     plat_candidates = ['0', '2', '3'] if plat_gb_cd != '1' else ['1']
     
     if target_ho:
@@ -233,7 +231,7 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
     for p_gb in plat_candidates:
         gb_name = "로트(3)" if p_gb == '3' else ("블록(2)" if p_gb == '2' else "일반(0)")
         
-        for page in range(1, 11): # 각 지번코드당 최대 1만건 탐색
+        for page in range(1, 11): 
             if target_ho:
                 status_text.info(f"⏳ 국토부 지번코드[{gb_name}] 전유부 융단폭격 탐색 중... ({page}페이지)")
             else:
@@ -268,30 +266,33 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
         
     df = pd.DataFrame(all_items)
     
-    # 🌟 1단계 필터: 면적이 0인 '유령 대장'을 발견 즉시 영구 삭제!
+    # 🌟 1단계 필터 (KeyError 완벽 방어막 적용!)
+    # 국토부가 아예 'area' 칸 자체를 안 줬을 경우를 대비해 안전하게 꺼내옵니다.
     if target_ho:
-        df['area_num'] = pd.to_numeric(df['area'].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
-        valid_pks = df.groupby('mgmBldrgstPk')['area_num'].sum()
-        valid_pks = valid_pks[valid_pks > 0].index
-        df = df[df['mgmBldrgstPk'].isin(valid_pks)]
+        area_series = df['area'] if 'area' in df.columns else pd.Series(0, index=df.index)
+        df['area_num'] = pd.to_numeric(area_series.astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+        
+        if 'mgmBldrgstPk' in df.columns:
+            valid_pks = df.groupby('mgmBldrgstPk')['area_num'].sum()
+            valid_pks = valid_pks[valid_pks > 0].index
+            df = df[df['mgmBldrgstPk'].isin(valid_pks)]
     else:
-        df['totArea_num'] = pd.to_numeric(df['totArea'].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+        tot_series = df['totArea'] if 'totArea' in df.columns else pd.Series(0, index=df.index)
+        df['totArea_num'] = pd.to_numeric(tot_series.astype(str).str.replace(',', ''), errors='coerce').fillna(0)
         df = df[df['totArea_num'] > 0]
 
-    # 🌟 2단계 필터: 호수 '엄격' 매칭 (엉뚱한 호수 노출 완벽 차단)
+    # 가짜 데이터 다 버리고 남은게 없다면 여기서 바로 멈춤
+    if df.empty:
+        return pd.DataFrame()
+
     def ho_match(row, target):
         if not target: return True
         t_clean = ''.join(filter(str.isalnum, str(target))).upper().replace('동','').replace('호','').replace('제','')
         if not t_clean or t_clean in ['0', '없음', 'NONE', 'NULL']: return True
-        
         h_val = str(row.get('hoNm', ''))
         h_clean = ''.join(filter(str.isalnum, h_val)).upper().replace('호','').replace('제','')
-        return t_clean == h_clean # 완벽하게 일치할 때만 통과!
+        return t_clean == h_clean
 
-    if target_ho and 'hoNm' in df.columns:
-        df = df[df.apply(lambda r: ho_match(r, target_ho), axis=1)]
-
-    # 🌟 3단계 필터: 동 '스마트' 매칭
     def dong_match(row, target):
         if not target: return True
         t_clean = ''.join(filter(str.isalnum, str(target))).upper().replace('동','').replace('호','').replace('제','')
@@ -304,11 +305,13 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
         if t_clean == d_clean: return True
         if f"{t_clean}동" in b_val: return True
         
-        # 국토부 가명(주3동, 주5동 등) 대응
         if t_clean.isdigit() and len(t_clean) >= 3 and t_clean.startswith('1'):
-            short_num = str(int(t_clean) % 100) # 103 -> 3
+            short_num = str(int(t_clean) % 100) 
             if d_clean == f"주{short_num}" or d_clean == str(short_num): return True
         return False
+
+    if target_ho and 'hoNm' in df.columns:
+        df = df[df.apply(lambda r: ho_match(r, target_ho), axis=1)]
 
     if target_dong and not df.empty:
         df = df[df.apply(lambda r: dong_match(r, target_dong), axis=1)]
@@ -542,6 +545,6 @@ with tab2:
                             xray_df = bld_df.drop(columns=[c for c in hide_xray_cols if c in bld_df.columns])
                             st.dataframe(xray_df)
                 else:
-                    st.warning(f"🚨 봇이 0(일반), 2(블록), 3(로트) 지번을 모두 뒤졌으나 해당 지번에 '{dong_input}동 {ho_input}호'가 없습니다. 지번이나 동/호수를 다시 한번 확인해주세요.")
+                    st.warning(f"🚨 0(일반), 2(블록), 3(로트) 지번을 모두 뒤졌으나 해당 지번에 '{dong_input}동 {ho_input}호'가 없습니다. 지번이나 동/호수를 다시 한번 확인해주세요.")
             else:
                 st.error("해당하는 지역을 찾을 수 없습니다.")
