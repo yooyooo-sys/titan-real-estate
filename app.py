@@ -303,7 +303,7 @@ st.title("🏢 부동산 올인원 실거래가 & 건축물대장 봇")
 
 tab1, tab2 = st.tabs(["💰 실거래가 조회", "📋 건축물대장 (표제/전유부) 요약 조회"])
 
-# ----------------- [탭 1] 실거래가 (기존 내용 그대로) -----------------
+# ----------------- [탭 1] 실거래가 -----------------
 with tab1:
     current_date = pd.Timestamp.now()
     current_month_str = current_date.strftime('%Y%m') 
@@ -343,10 +343,10 @@ with tab1:
             else:
                 st.error("지역을 찾을 수 없습니다. 오타가 없는지 확인해주세요.")
 
-# ----------------- [탭 2] 건축물대장 (실제 문서 폼 적용!) -----------------
+# ----------------- [탭 2] 건축물대장 -----------------
 with tab2:
     st.subheader("📋 특정 지번 건축물대장 (표제/전유부) 요약")
-    st.info("💡 대단지 아파트는 **'동'**과 **'호수'**를 함께 입력하시고, 동이 없는 빌라는 동 칸을 비워두세요. (0이나 없음으로 쳐도 봇이 알아서 무시합니다.)")
+    st.info("💡 대단지 아파트는 **'동'**과 **'호수'**를 함께 입력하시고, 동이 없는 건물은 동 칸을 비워두세요.")
     
     with st.form("bldrgst_form"):
         col1, col2, col3 = st.columns([2, 1, 1])
@@ -368,9 +368,7 @@ with tab2:
             sgg_cd, bjdong_cd, full_loc_name = get_full_bjdong_code(region_search_term)
             
             if sgg_cd and bjdong_cd:
-                # 🌟 안심 알림창 복구 완료!
                 st.success(f"✅ 주소 파싱 성공: {full_loc_name} (본번:{bun} 부번:{ji})")
-                
                 bld_df = get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, dong_input, ho_input)
                 
                 if not bld_df.empty:
@@ -380,6 +378,12 @@ with tab2:
                         val = row.get(key, default)
                         if pd.isna(val) or str(val).strip() in ['None', '', 'nan']: return default
                         return str(val).strip()
+
+                    # 🌟 엑스레이 화면에서 삭제할 쓰레기 시스템 코드 목록
+                    hide_xray_cols = [
+                        '시군구코드', '법정동코드', '대지구분코드', '관리대장PK', '대장구분코드', 
+                        '대장종류코드', '로트', '도로명코드', '도로명법정동코드', '지하구분코드', '층구분코드'
+                    ]
 
                     with st.container(border=True):
                         # 🌟 전유부 (호수 입력 시)
@@ -405,7 +409,6 @@ with tab2:
                             addr = get_clean_val(main_row, '도로명주소', get_clean_val(main_row, '대지위치', '-'))
                             
                             b_nm = get_clean_val(main_row, '건물명', '')
-                            # 동 입력값이 정상적인 글자일 때만 출력
                             clean_d_input = ''.join(filter(str.isalnum, str(dong_input)))
                             d_nm = get_clean_val(main_row, '동명칭', f'{dong_input}동' if clean_d_input and clean_d_input not in ['0', '없음'] else '')
                             h_nm = get_clean_val(main_row, '호명칭', f'{ho_input}호')
@@ -425,9 +428,10 @@ with tab2:
                             | **계약면적(총)**| <span style='color:#d93025; font-weight:bold; font-size:1.1em;'>{계약면적:,.2f} ㎡</span> | **대지권지분** | 등기부등본 확인 요망 |
                             """, unsafe_allow_html=True)
                             
-                            with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기 (100% 한글화 완료)"):
-                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다. 누락된 데이터가 있는지 확인해보세요.")
-                                st.dataframe(bld_df)
+                            with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기"):
+                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다. 불필요한 시스템 코드는 숨김 처리했습니다.")
+                                xray_df = bld_df.drop(columns=[c for c in hide_xray_cols if c in bld_df.columns])
+                                st.dataframe(xray_df)
                             
                         # 🌟 표제부 (건물 전체)
                         else:
@@ -459,9 +463,10 @@ with tab2:
                             | **세대/가구수**| {get_clean_val(main_row, '세대수', '0')}세대 / {get_clean_val(main_row, '가구수', '0')}가구 | **사용승인일** | {use_day_fmt} |
                             """, unsafe_allow_html=True)
                             
-                            with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기 (100% 한글화 완료)"):
-                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다. 누락된 데이터가 있는지 확인해보세요.")
-                                st.dataframe(bld_df)
+                            with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기"):
+                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다. 불필요한 시스템 코드는 숨김 처리했습니다.")
+                                xray_df = bld_df.drop(columns=[c for c in hide_xray_cols if c in bld_df.columns])
+                                st.dataframe(xray_df)
                 else:
                     st.warning(f"해당 지번에 대한 건축물대장 정보가 없습니다. 지번이나 동/호수를 다시 한번 확인해주세요.")
             else:
