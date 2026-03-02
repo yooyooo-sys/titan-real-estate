@@ -167,7 +167,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수 (None 제거 & 안전장치 & 원본확인!)
+# 🌟 [기능 2] 건축물대장 처리 함수 (초거대 한글 번역 사전 탑재!)
 # ==========================================
 def parse_address_for_bldrgst(address_str):
     parts = address_str.strip().split()
@@ -239,7 +239,6 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_ho=""):
             
             df = pd.DataFrame(item_list)
             
-            # 🌟 호수 스마트 필터링 (None 에러 방지 포함)
             if target_ho and not df.empty and 'hoNm' in df.columns:
                 search_str = ''.join(filter(str.isalnum, target_ho))
                 def match_ho(x):
@@ -248,21 +247,36 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_ho=""):
                     return search_str in clean_x
                 df = df[df['hoNm'].apply(match_ho)]
             
-            rename_dict = {
-                'bldNm': '건물명', 'dongNm': '동명칭', 'hoNm': '호명칭',
-                'mainPurpsCdNm': '주용도', 'etcPurps': '기타용도',
+            # 🌟 60여 개의 모든 국토부 외계어를 실무 용어로 100% 싹 다 번역!
+            mega_rename_dict = {
+                'rnum': '순번', 'platPlc': '대지위치', 'sigunguCd': '시군구코드', 'bjdongCd': '법정동코드',
+                'platGbCd': '대지구분코드', 'bun': '본번', 'ji': '부번', 'mgmBldrgstPk': '관리대장PK',
+                'regstrGbCd': '대장구분코드', 'regstrGbCdNm': '대장구분(일반/집합)',
+                'regstrKindCd': '대장종류코드', 'regstrKindCdNm': '대장종류(표제/전유)',
+                'newPlatPlc': '도로명주소', 'bldNm': '건물명', 'splotNm': '특수지명',
+                'block': '블록', 'lot': '로트', 'bylotCnt': '외필지수',
+                'naRoadCd': '도로명코드', 'naBjdongCd': '도로명법정동코드', 'naUgrndCd': '지하구분코드',
+                'naMainBun': '도로명본번', 'naSubBun': '도로명부번',
+                'dongNm': '동명칭', 'hoNm': '호명칭', 'flrGbCd': '층구분코드', 'flrGbCdNm': '층구분',
+                'flrNo': '층번호', 'flrNoNm': '해당층',
+                'mainPurpsCd': '주용도코드', 'mainPurpsCdNm': '주용도', 'etcPurps': '기타용도',
+                'strctCd': '구조코드', 'strctCdNm': '구조', 'etcStrct': '기타구조',
+                'roofCd': '지붕코드', 'roofCdNm': '지붕', 'etcRoof': '기타지붕',
+                'area': '면적(㎡)', 'exposPubuseGbCd': '전유공용구분코드', 'exposPubuseGbCdNm': '전유공용구분',
+                'mainAtchGbCd': '주부속구분코드', 'mainAtchGbCdNm': '주부속구분',
                 'platArea': '대지면적(㎡)', 'archArea': '건축면적(㎡)', 'bcRat': '건폐율(%)',
                 'totArea': '연면적(㎡)', 'vlRatEstmTotArea': '용적률산정연면적(㎡)', 'vlRat': '용적률(%)',
-                'strctCdNm': '구조', 'roofCdNm': '지붕', 'heit': '높이(m)',
-                'grndFlrCnt': '지상층수', 'ugrndFlrCnt': '지하층수',
+                'heit': '높이(m)', 'grndFlrCnt': '지상층수', 'ugrndFlrCnt': '지하층수',
                 'useAprDay': '사용승인일', 'hhldCnt': '세대수', 'fmlyCnt': '가구수',
                 'rideUseElvtCnt': '승용승강기', 'emgenUseElvtCnt': '비상승강기',
                 'oudrMechUtcnt': '옥외기계식', 'oudrAutoUtcnt': '옥외자주식',
                 'indrMechUtcnt': '옥내기계식', 'indrAutoUtcnt': '옥내자주식',
-                'platPlc': '대지위치', 'newPlatPlc': '도로명주소',
-                'flrNoNm': '해당층', 'exposPubuseGbCdNm': '전유공용구분', 'area': '면적(㎡)'
+                'crtnDay': '생성일자', 'pmsDay': '허가일', 'stcnsDay': '착공일',
+                'engrRat': '에너지효율비율', 'engrEpi': 'EPI점수', 'gnBldCert': '친환경건축물인증',
+                'itgBldCert': '지능형건축물인증', 'rserthqkDsgnApplyYn': '내진설계적용여부', 'rserthqkAblty': '내진능력',
+                'atchBldCnt': '부속건축물수', 'atchBldArea': '부속건축물면적', 'totDongTotArea': '총동연면적'
             }
-            df = df.rename(columns=rename_dict)
+            df = df.rename(columns=mega_rename_dict)
             return df
         else:
             return pd.DataFrame()
@@ -276,7 +290,7 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_ho=""):
 st.set_page_config(page_title="부동산 올인원 봇", layout="wide")
 st.title("🏢 부동산 올인원 실거래가 & 건축물대장 봇")
 
-tab1, tab2 = st.tabs(["💰 실거래가 조회", "📋 건축물대장 (표제/전유부) 실제 양식 조회"])
+tab1, tab2 = st.tabs(["💰 실거래가 조회", "📋 건축물대장 (표제/전유부) 요약 조회"])
 
 # ----------------- [탭 1] 실거래가 (기존 내용 그대로) -----------------
 with tab1:
@@ -320,7 +334,7 @@ with tab1:
 
 # ----------------- [탭 2] 건축물대장 (실제 문서 폼 적용!) -----------------
 with tab2:
-    st.subheader("📋 특정 지번 건축물대장 (표제/전유부) 실제 양식")
+    st.subheader("📋 특정 지번 건축물대장 (표제/전유부) 요약")
     st.info("💡 아파트, 다세대주택(빌라) 등은 **'호수'**를 입력하시면 해당 세대의 **[전유부]**가 조회됩니다. 호수를 비워두면 건물 전체의 **[표제부]**가 조회됩니다.")
     
     with st.form("bldrgst_form"):
@@ -346,7 +360,6 @@ with tab2:
                 if not bld_df.empty:
                     st.markdown("<br>", unsafe_allow_html=True)
                     
-                    # 🌟 None 같은 쓰레기 글자를 깔끔하게 지워주는 만능 지우개 함수
                     def get_clean_val(row, key, default='-'):
                         val = row.get(key, default)
                         if pd.isna(val) or str(val).strip() in ['None', '', 'nan']: return default
@@ -375,7 +388,6 @@ with tab2:
                             
                             addr = get_clean_val(main_row, '도로명주소', get_clean_val(main_row, '대지위치', '-'))
                             
-                            # None 꼴보기 싫은 것 완벽 차단
                             b_nm = get_clean_val(main_row, '건물명', '')
                             d_nm = get_clean_val(main_row, '동명칭', '')
                             h_nm = get_clean_val(main_row, '호명칭', f'{ho_input}호')
@@ -395,9 +407,9 @@ with tab2:
                             | **계약면적(총)**| <span style='color:#d93025; font-weight:bold; font-size:1.1em;'>{계약면적:,.2f} ㎡</span> | **대지권지분** | 등기부등본 확인 요망 |
                             """, unsafe_allow_html=True)
                             
-                            # 🌟 [핵심] 답답할 때 열어보는 정부 원본 데이터 엑스레이
-                            with st.expander("🛠️ (클릭) 도대체 국토부가 데이터를 어떻게 줬길래 빈칸이 나오나? 원본 확인하기"):
-                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 '날것 그대로'의 데이터입니다. 만약 위에서 면적이 0.00으로 나오거나 주용도가 '-'로 뜬다면, 아래 원본 표에서도 해당 항목이 아예 비어있기 때문입니다. (1990년대 구축 빌라 전산의 고질적인 문제입니다.)")
+                            # 🌟 [업그레이드 완료] 한글로 100% 번역된 엑스레이 원본 확인 창
+                            with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기 (100% 한글화 완료)"):
+                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다. 영어 태그들을 모두 실무 용어로 번역해 두었으니, 어떤 데이터가 누락되었는지 한눈에 확인하실 수 있습니다.")
                                 st.dataframe(bld_df)
                             
                         # 🌟 표제부 (건물 전체)
@@ -426,6 +438,10 @@ with tab2:
                             | **건폐율/용적률**| {get_clean_val(main_row, '건폐율(%)')} % / {get_clean_val(main_row, '용적률(%)')} % | **총 주차대수** | {total_parking} 대 |
                             | **세대/가구수**| {get_clean_val(main_row, '세대수', '0')}세대 / {get_clean_val(main_row, '가구수', '0')}가구 | **사용승인일** | {use_day_fmt} |
                             """, unsafe_allow_html=True)
+                            
+                            with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기 (100% 한글화 완료)"):
+                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다. 영어 태그들을 모두 실무 용어로 번역해 두었으니, 어떤 데이터가 누락되었는지 한눈에 확인하실 수 있습니다.")
+                                st.dataframe(bld_df)
                 else:
                     st.warning(f"해당 지번에 대한 건축물대장 정보가 없습니다. 지번이나 호수를 확인해주세요.")
             else:
