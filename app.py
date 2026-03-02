@@ -167,7 +167,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수 (동/호수 스마트 방어막 탑재!)
+# 🌟 [기능 2] 건축물대장 처리 함수 (동/호수 정밀 타격 & 면적 완벽 복구!)
 # ==========================================
 def parse_address_for_bldrgst(address_str):
     parts = address_str.strip().split()
@@ -239,25 +239,19 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
             
             df = pd.DataFrame(item_list)
             
-            # 🌟 🛡️ 스마트 방어막: 한글/숫자만 남기고 특수문자나 띄어쓰기는 완벽 제거
-            clean_dong = ''.join(filter(str.isalnum, str(target_dong)))
-            clean_ho = ''.join(filter(str.isalnum, str(target_ho)))
-            
-            # 🌟 '동' 필터링 (빈칸, '0', '없음' 등을 입력하면 아예 무시하고 전체 검색)
-            if clean_dong and clean_dong not in ['0', '없음', 'none', 'null']:
-                if 'dongNm' in df.columns:
-                    def match_dong(x):
-                        if pd.isna(x) or str(x).strip() in ['None', '', 'nan']: return False
-                        return clean_dong in ''.join(filter(str.isalnum, str(x)))
-                    df = df[df['dongNm'].apply(match_dong)]
+            # 🌟 [수정 완료] 글자를 깨끗하게 씻어내어 '완벽 일치'만 찾아내는 필터링
+            def normalize_str(s, suffix):
+                if pd.isna(s) or str(s).strip() in ['None', '', 'nan', '0', '없음', 'null']: return ''
+                res = ''.join(filter(str.isalnum, str(s))).upper()
+                return res.replace(suffix, '').replace('제', '')
 
-            # 🌟 '호' 필터링
-            if clean_ho and clean_ho not in ['0', '없음']:
-                if 'hoNm' in df.columns:
-                    def match_ho(x):
-                        if pd.isna(x) or str(x).strip() in ['None', '', 'nan']: return False
-                        return clean_ho in ''.join(filter(str.isalnum, str(x)))
-                    df = df[df['hoNm'].apply(match_ho)]
+            norm_dong = normalize_str(target_dong, '동')
+            if norm_dong and 'dongNm' in df.columns:
+                df = df[df['dongNm'].apply(lambda x: normalize_str(x, '동') == norm_dong)]
+
+            norm_ho = normalize_str(target_ho, '호')
+            if norm_ho and 'hoNm' in df.columns:
+                df = df[df['hoNm'].apply(lambda x: normalize_str(x, '호') == norm_ho)]
             
             mega_rename_dict = {
                 'rnum': '순번', 'platPlc': '대지위치', 'sigunguCd': '시군구코드', 'bjdongCd': '법정동코드',
@@ -303,7 +297,7 @@ st.title("🏢 부동산 올인원 실거래가 & 건축물대장 봇")
 
 tab1, tab2 = st.tabs(["💰 실거래가 조회", "📋 건축물대장 (표제/전유부) 요약 조회"])
 
-# ----------------- [탭 1] 실거래가 -----------------
+# ----------------- [탭 1] 실거래가 (기존 내용 그대로) -----------------
 with tab1:
     current_date = pd.Timestamp.now()
     current_month_str = current_date.strftime('%Y%m') 
@@ -351,9 +345,9 @@ with tab2:
     with st.form("bldrgst_form"):
         col1, col2, col3 = st.columns([2, 1, 1])
         with col1:
-            address_input = st.text_input("조회할 텍스트 주소 (필수)", placeholder="예: 상도동 360-4")
+            address_input = st.text_input("조회할 텍스트 주소 (필수)", placeholder="예: 상도동 450")
         with col2:
-            dong_input = st.text_input("동 (선택)", placeholder="예: 114")
+            dong_input = st.text_input("동 (선택)", placeholder="예: 101")
         with col3:
             ho_input = st.text_input("호수 (선택)", placeholder="예: 301")
             
@@ -379,7 +373,6 @@ with tab2:
                         if pd.isna(val) or str(val).strip() in ['None', '', 'nan']: return default
                         return str(val).strip()
 
-                    # 🌟 엑스레이 화면에서 삭제할 쓰레기 시스템 코드 목록
                     hide_xray_cols = [
                         '시군구코드', '법정동코드', '대지구분코드', '관리대장PK', '대장구분코드', 
                         '대장종류코드', '로트', '도로명코드', '도로명법정동코드', '지하구분코드', '층구분코드'
@@ -388,9 +381,13 @@ with tab2:
                     with st.container(border=True):
                         # 🌟 전유부 (호수 입력 시)
                         if ho_input:
+                            # 🌟 [수정 완료] '전유부분', '전유 ' 등 띄어쓰기나 글자가 섞여 있어도 다 잡아냅니다.
                             if '전유공용구분' in bld_df.columns:
-                                전용_df = bld_df[bld_df['전유공용구분'] == '전유']
-                                공용_df = bld_df[bld_df['전유공용구분'] == '공용']
+                                is_jeonyu = bld_df['전유공용구분'].astype(str).str.contains('전유', na=False)
+                                is_gongyong = bld_df['전유공용구분'].astype(str).str.contains('공용', na=False)
+                                
+                                전용_df = bld_df[is_jeonyu]
+                                공용_df = bld_df[is_gongyong]
                                 if 전용_df.empty: 전용_df = bld_df
                             else:
                                 전용_df = bld_df
@@ -399,9 +396,16 @@ with tab2:
                             def safe_float(val):
                                 try: return float(str(val).replace(',', '').strip())
                                 except: return 0.0
+                            
+                            # 혹시 국토부가 'area'라는 원본 태그를 안 바꿨을 경우까지 대비
+                            area_col = '면적(㎡)' if '면적(㎡)' in bld_df.columns else ('area' if 'area' in bld_df.columns else None)
+                            
+                            if area_col:
+                                전용면적 = sum(safe_float(x) for x in 전용_df[area_col]) if not 전용_df.empty else 0.0
+                                공용면적 = sum(safe_float(x) for x in 공용_df[area_col]) if not 공용_df.empty else 0.0
+                            else:
+                                전용면적, 공용면적 = 0.0, 0.0
                                 
-                            전용면적 = sum(safe_float(x) for x in 전용_df.get('면적(㎡)', []))
-                            공용면적 = sum(safe_float(x) for x in 공용_df.get('면적(㎡)', []))
                             계약면적 = 전용면적 + 공용면적
                             
                             main_row = 전용_df.iloc[0] if not 전용_df.empty else bld_df.iloc[0]
@@ -429,7 +433,7 @@ with tab2:
                             """, unsafe_allow_html=True)
                             
                             with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기"):
-                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다. 불필요한 시스템 코드는 숨김 처리했습니다.")
+                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다.")
                                 xray_df = bld_df.drop(columns=[c for c in hide_xray_cols if c in bld_df.columns])
                                 st.dataframe(xray_df)
                             
@@ -464,7 +468,7 @@ with tab2:
                             """, unsafe_allow_html=True)
                             
                             with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기"):
-                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다. 불필요한 시스템 코드는 숨김 처리했습니다.")
+                                st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다.")
                                 xray_df = bld_df.drop(columns=[c for c in hide_xray_cols if c in bld_df.columns])
                                 st.dataframe(xray_df)
                 else:
