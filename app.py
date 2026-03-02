@@ -167,7 +167,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수 (페이지 무제한 돌파 & 스마트 타겟팅!)
+# 🌟 [기능 2] 건축물대장 처리 함수 (페이지 무제한 돌파 & 초정밀 AI 필터!)
 # ==========================================
 import re 
 import pandas as pd
@@ -219,77 +219,8 @@ def get_full_bjdong_code(search_term):
     except: return None, None, None
 
 def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong="", target_ho=""):
-    def is_exact_match(t_clean, api_val):
-        if pd.isna(api_val) or str(api_val).strip() in ['None', '', 'nan']: return False
-        api_str = str(api_val).upper()
-        if t_clean.isdigit():
-            nums = re.findall(r'\d+', api_str)
-            for n in nums:
-                if int(n) == int(t_clean): return True
-        else:
-            a_str = api_str.replace('제', ' ').replace('동', ' ').replace('호', ' ')
-            tokens = re.findall(r'[A-Z0-9가-힣]+', a_str)
-            if t_clean in tokens: return True
-        return False
-
-    def is_dong_match(target, d_val, b_val):
-        if not target: return True
-        t_clean = ''.join(filter(str.isalnum, str(target))).upper().replace('동','').replace('호','').replace('제','')
-        if not t_clean or t_clean in ['0', '없음', 'NONE', 'NULL']: return True
-        
-        d_clean = ''.join(filter(str.isalnum, str(d_val))).upper().replace('동','').replace('제','')
-        if t_clean == d_clean: return True
-        if f"{t_clean}동" in str(b_val): return True
-        
-        # 가명 처리 (105동 -> 주5)
-        if t_clean.isdigit() and len(t_clean) >= 3:
-            short_num = str(int(t_clean) % 100)
-            if d_clean == f"주{short_num}" or d_clean == str(short_num): return True
-        return False
-
-    # 🌟 1단계: 표제부 탐색으로 진짜 지번(0,2,3)과 가명 찾아내기
-    search_bun, search_ji = bun, ji
-    found_plat_gbs = []
-    mapped_db_dong = None 
+    plat_candidates = ['0', '2', '3'] if plat_gb_cd != '1' else ['1']
     
-    plat_candidates = ['3', '2', '0'] if plat_gb_cd != '1' else ['1']
-    
-    for p_gb in plat_candidates:
-        title_url = f"http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={p_gb}&bun={bun}&ji={ji}&numOfRows=1000&pageNo=1"
-        try:
-            res = requests.get(title_url, timeout=10)
-            if not res.text.strip().startswith('<'): continue
-            xml_data = xmltodict.parse(res.content)
-            items = xml_data.get('response', {}).get('body', {}).get('items', {}).get('item', [])
-            if isinstance(items, dict): items = [items]
-            
-            for item in items:
-                d_val = str(item.get('dongNm', ''))
-                b_val = str(item.get('bldNm', ''))
-                tot_area = item.get('totArea', '0')
-                try: tot_area_f = float(str(tot_area).replace(',',''))
-                except: tot_area_f = 0.0
-                
-                if tot_area_f <= 0.0: continue # 유령대장 패스
-                    
-                if target_dong:
-                    if is_dong_match(target_dong, d_val, b_val):
-                        search_bun = str(item.get('bun', bun)).zfill(4)
-                        search_ji = str(item.get('ji', ji)).zfill(4)
-                        found_plat_gbs.append(p_gb)
-                        mapped_db_dong = d_val 
-                        break
-                else:
-                    found_plat_gbs.append(p_gb)
-                    break
-            if found_plat_gbs: break
-        except:
-            pass
-
-    # 못 찾았으면 일단 다 뒤집니다.
-    plats_to_scan = found_plat_gbs if found_plat_gbs else plat_candidates
-
-    # 🌟 2단계: 리미트 해제! (최대 50페이지, 5만건 스캔)
     if target_ho:
         base_url = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposInfo" 
     else:
@@ -298,82 +229,120 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
     all_items = []
     status_text = st.empty()
     
-    for p_gb in plats_to_scan:
+    # 🌟 1. 리미트 해제! 대단지의 엄청난 데이터도 끝까지(최대 50페이지) 긁어옵니다.
+    for p_gb in plat_candidates:
         gb_name = "로트(3)" if p_gb == '3' else ("블록(2)" if p_gb == '2' else "일반(0)")
+        page = 1
         
-        # 리미트 해제: range(1, 51)로 최대 5만건까지 싹쓸이!
-        for page in range(1, 51): 
-            if target_ho:
-                status_text.info(f"⏳ 국토부 지번코드[{gb_name}] 타겟 추적 중... 대단지 뒷페이지({page}장) 스캔 중!")
-            else:
-                status_text.info(f"⏳ 국토부 지번코드[{gb_name}] 표제부 탐색 중... ({page}페이지)")
+        while page <= 50:
+            url = f"{base_url}?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={p_gb}&bun={bun}&ji={ji}&numOfRows=1000&pageNo={page}"
+            
+            success = False
+            xml_data = {}
+            for _ in range(2): # 서버 지연 대비 자동 재시도 기능
+                try:
+                    response = requests.get(url, timeout=15)
+                    if response.text.strip().startswith('<'):
+                        xml_data = xmltodict.parse(response.content)
+                        if 'OpenAPI_ServiceResponse' not in xml_data:
+                            success = True
+                            break
+                except:
+                    time.sleep(0.5)
+                    
+            if not success: break
+            
+            body = xml_data.get('response', {}).get('body', {})
+            items_dict = body.get('items')
+            total_count = int(body.get('totalCount', 0))
+            
+            if items_dict and 'item' in items_dict:
+                item_list = items_dict['item']
+                if isinstance(item_list, dict): item_list = [item_list]
+                all_items.extend(item_list)
                 
-            url = f"{base_url}?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={p_gb}&bun={search_bun}&ji={search_ji}&numOfRows=1000&pageNo={page}"
-            try:
-                response = requests.get(url, timeout=10)
-                content = response.text.strip()
-                if not content.startswith('<'): continue
-                    
-                xml_data = xmltodict.parse(response.content)
-                if 'OpenAPI_ServiceResponse' in xml_data: break
-                    
-                body = xml_data.get('response', {}).get('body', {})
-                items_dict = body.get('items')
-                
-                if items_dict and 'item' in items_dict:
-                    item_list = items_dict['item']
-                    if isinstance(item_list, dict): item_list = [item_list]
-                    all_items.extend(item_list)
-                    
-                    total_count = int(body.get('totalCount', 0))
-                    if page * 1000 >= total_count: break 
+                # 화면에 실시간 진행도를 띄워 안심시킵니다.
+                if target_ho:
+                    status_text.info(f"⏳ 국토부 지번코드[{gb_name}] 뒷페이지 데이터 싹쓸이 중... (진행도: {page*1000}건 / {total_count}건)")
                 else:
-                    break
-            except:
+                    status_text.info(f"⏳ 국토부 지번코드[{gb_name}] 표제부 탐색 중... ({page*1000}건 / {total_count}건)")
+                
+                if page * 1000 >= total_count: break 
+            else:
                 break
+            page += 1
                 
     status_text.empty() 
     if not all_items: return pd.DataFrame()
         
     df = pd.DataFrame(all_items)
     
-    # 🌟 3단계: 엄격한 필터링 (가짜 유령대장 버리기)
+    # 🌟 2. 안전한 유령 대장 필터링 (가짜는 버리되, 진짜가 없으면 가짜라도 띄움)
     if target_ho:
         area_series = df['area'] if 'area' in df.columns else pd.Series(0, index=df.index)
         df['area_num'] = pd.to_numeric(area_series.astype(str).str.replace(',', ''), errors='coerce').fillna(0)
         if 'mgmBldrgstPk' in df.columns:
             valid_pks = df.groupby('mgmBldrgstPk')['area_num'].sum()
             valid_pks = valid_pks[valid_pks > 0].index
-            df = df[df['mgmBldrgstPk'].isin(valid_pks)]
+            df_real = df[df['mgmBldrgstPk'].isin(valid_pks)]
+            if not df_real.empty: 
+                df = df_real # 진짜 데이터가 있으면 진짜만 남김
     else:
         tot_series = df['totArea'] if 'totArea' in df.columns else pd.Series(0, index=df.index)
         df['totArea_num'] = pd.to_numeric(tot_series.astype(str).str.replace(',', ''), errors='coerce').fillna(0)
-        df = df[df['totArea_num'] > 0]
+        df_real = df[df['totArea_num'] > 0]
+        if not df_real.empty:
+            df = df_real
 
     if df.empty: return pd.DataFrame()
 
-    # 호수 완벽 매칭 (엉뚱한 호수 노출 완벽 차단)
+    # 🌟 3. 호수 초정밀 AI 필터 (12층1201호에서 1201만 완벽 추출)
     def ho_match(row, target):
         if not target: return True
-        t_clean = ''.join(filter(str.isalnum, str(target))).upper().replace('동','').replace('호','').replace('제','')
-        if not t_clean or t_clean in ['0', '없음', 'NONE', 'NULL']: return True
-        h_val = str(row.get('hoNm', ''))
-        h_clean = ''.join(filter(str.isalnum, h_val)).upper().replace('호','').replace('제','')
+        t_str = str(target).upper().replace('호', '').replace('제', '')
+        t_nums = re.findall(r'\d+', t_str)
+        h_val = str(row.get('hoNm', '')).upper()
+        
+        if t_nums:
+            t_num = t_nums[-1]
+            h_nums = re.findall(r'\d+', h_val)
+            if t_num in h_nums: return True # "1301"이 "301"에 낚이는 현상 완벽 차단!
+            
+        t_clean = ''.join(filter(str.isalnum, t_str))
+        h_clean = ''.join(filter(str.isalnum, h_val.replace('호','').replace('제','')))
         return t_clean == h_clean
 
     if target_ho and 'hoNm' in df.columns:
         df = df[df.apply(lambda r: ho_match(r, target_ho), axis=1)]
 
-    # 동 완벽 매칭
-    def final_dong_match(row, target):
+    # 🌟 4. 동 초정밀 매칭
+    def dong_match_final(row, target):
         if not target: return True
+        t_str = str(target).upper().replace('동', '').replace('제', '')
+        t_clean = ''.join(filter(str.isalnum, t_str))
+        if not t_clean or t_clean in ['0', '없음', 'NONE', 'NULL']: return True
+        
         d_val = str(row.get('dongNm', ''))
         b_val = str(row.get('bldNm', ''))
-        if mapped_db_dong and d_val == mapped_db_dong: return True
-        return is_dong_match(target, d_val, b_val)
+        
+        d_clean = ''.join(filter(str.isalnum, d_val)).upper().replace('동','').replace('제','')
+        if t_clean == d_clean: return True
+        if f"{t_clean}동" in b_val.replace(' ', ''): return True
+        
+        t_nums = re.findall(r'\d+', t_str)
+        if t_nums:
+            t_num = t_nums[-1]
+            d_nums = re.findall(r'\d+', d_val)
+            if t_num in d_nums: return True
+            
+            short_num = str(int(t_num) % 100) # 105 -> 5
+            if d_clean == f"주{short_num}" or d_clean == str(short_num): return True
+            if d_clean == f"주{t_num}": return True
+            
+        return False
 
     if target_dong and not df.empty:
-        df = df[df.apply(lambda r: final_dong_match(r, target_dong), axis=1)]
+        df = df[df.apply(lambda r: dong_match_final(r, target_dong), axis=1)]
         
     mega_rename_dict = {
         'rnum': '순번', 'platPlc': '대지위치', 'sigunguCd': '시군구코드', 'bjdongCd': '법정동코드',
@@ -529,7 +498,7 @@ with tab2:
                             계약면적 = 전용면적 + 공용면적
                             
                             if shown_count >= 5:
-                                st.info("💡 여러 세대가 조회되어 상위 5개만 보여드립니다.")
+                                st.info("💡 여러 세대가 조회되어 상위 5개만 보여드립니다. 전체 내역은 맨 아래 원본 표를 확인하세요.")
                                 break
                             shown_count += 1
                             
@@ -562,6 +531,9 @@ with tab2:
                                 | **공용면적** | {공용면적:,.2f} ㎡ | **구조** | {get_clean_val(main_row, '구조')} |
                                 | **계약면적(총)**| <span style='color:#d93025; font-weight:bold; font-size:1.1em;'>{계약면적:,.2f} ㎡</span> | **대지권지분** | 등기부등본 확인 요망 |
                                 """, unsafe_allow_html=True)
+                                
+                        if shown_count == 0:
+                            st.warning("🚨 조회된 세대가 있으나, 국토부 전산상 면적이 모두 0.00으로 기재된 '누락 대장(유령 대장)'만 존재합니다. 아래 원본 데이터를 확인해주세요.")
                                 
                         with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기"):
                             st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터입니다.")
