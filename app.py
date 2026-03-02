@@ -167,7 +167,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수 (국토부 암호 해독기 탑재!)
+# 🌟 [기능 2] 건축물대장 처리 함수 (비밀 지번 & 유령 대장 회피 엔진!)
 # ==========================================
 import re 
 import pandas as pd
@@ -240,12 +240,16 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
         if t_clean in dongs_in_bld: return True
         return False
 
-    # 🌟 [1단계 핵심] 표제부를 먼저 뒤져서 105동의 '진짜 전산 가명(예: 주5)'과 '숨겨진 지번'을 캐냅니다!
+    # 🌟 [특급 엔진] 대단지 아파트는 '일반 대지(0)'에 유령 대장을 남기고, 진짜 데이터는 '블록(2)'에 숨겨둡니다.
+    # 그래서 platGbCd를 0과 2 모두 강력하게 스캔합니다!
     search_bun, search_ji, search_plat_gb = bun, ji, plat_gb_cd
     mapped_db_dong = None 
+    found_real_record = False
     
-    if target_dong and target_ho:
-        title_url = f"http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={plat_gb_cd}&bun={bun}&ji={ji}&numOfRows=1000&pageNo=1"
+    plat_candidates = ['1'] if plat_gb_cd == '1' else ['0', '2']
+    
+    for p_gb in plat_candidates:
+        title_url = f"http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={p_gb}&bun={bun}&ji={ji}&numOfRows=1000&pageNo=1"
         try:
             res = requests.get(title_url, timeout=10)
             xml_data = xmltodict.parse(res.content)
@@ -255,16 +259,31 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
             for item in items:
                 d_val = str(item.get('dongNm', ''))
                 b_val = str(item.get('bldNm', ''))
-                if is_dong_match(target_dong, d_val, b_val):
-                    search_bun = str(item.get('bun', bun)).zfill(4)
-                    search_ji = str(item.get('ji', ji)).zfill(4)
-                    search_plat_gb = str(item.get('platGbCd', plat_gb_cd))
-                    mapped_db_dong = d_val # 🌟 가명(예: '주5') 획득 성공!
+                
+                # 유령 대장 필터링: 건물명도 없고 동명칭도 없는 쓰레기 데이터는 버림
+                if not d_val and not b_val: continue
+                    
+                if target_dong:
+                    if is_dong_match(target_dong, d_val, b_val):
+                        search_bun = str(item.get('bun', bun)).zfill(4)
+                        search_ji = str(item.get('ji', ji)).zfill(4)
+                        search_plat_gb = str(item.get('platGbCd', p_gb))
+                        mapped_db_dong = d_val 
+                        found_real_record = True
+                        break
+                else:
+                    search_plat_gb = str(item.get('platGbCd', p_gb))
+                    found_real_record = True
                     break
+            if found_real_record: break
         except Exception as e:
             pass
 
-    # 🌟 [2단계] 캐낸 가명(mapped_db_dong)을 들고 전유부를 싹쓸이 탐색합니다.
+    # 만약 위에서 못 찾았다면, 껍데기만 있는 '0' 대신 진짜일 확률이 높은 '2(블록)'로 강제 변환
+    if not found_real_record and plat_gb_cd != '1':
+        search_plat_gb = '2'
+
+    # 🌟 [2단계] 찾아낸 '진짜 지번 코드(search_plat_gb)'로 전유부 싹쓸이 탐색
     if target_ho:
         base_url = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposInfo" 
     else:
@@ -274,8 +293,9 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
     status_text = st.empty()
     
     for page in range(1, 21):
-        if target_ho and mapped_db_dong:
-            status_text.info(f"⏳ 국토부 전산 가명('{mapped_db_dong}')을 해독하여 대단지 전유부를 정밀 탐색 중입니다... ({page}페이지)")
+        gb_name = "특수 블록/로트" if search_plat_gb == '2' else "일반 대지"
+        if target_ho:
+            status_text.info(f"⏳ 국토부 비밀 지번({gb_name})을 추적하여 진짜 전유부를 싹쓸이 탐색 중입니다... ({page}페이지)")
         else:
             status_text.info(f"⏳ 건축물대장 데이터를 싹쓸이 탐색 중입니다... ({page}페이지)")
             
@@ -332,10 +352,7 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
         d_val = str(row.get('dongNm', ''))
         b_val = str(row.get('bldNm', ''))
         
-        # 해독한 가명(예: '주5')과 전유부 데이터가 일치하면 무조건 통과!
         if mapped_alias and mapped_alias == d_val: return True
-        
-        # 일반적인 매칭
         if is_exact_match(t_clean, d_val): return True
         dongs_in_bld = re.findall(r'(\d+)동', str(b_val))
         if t_clean in dongs_in_bld: return True
@@ -520,7 +537,6 @@ with tab2:
                                 clean_d_input = ''.join(filter(str.isalnum, str(dong_input)))
                                 d_nm = get_clean_val(main_row, '동명칭', '')
                                 
-                                # DB 가명(주5)을 우리가 아는 동(105동)으로 예쁘게 바꿔치기
                                 if clean_d_input and clean_d_input not in ['0', '없음'] and d_nm == '':
                                     if f"{clean_d_input}동" not in b_nm:
                                         d_nm = f"{clean_d_input}동"
