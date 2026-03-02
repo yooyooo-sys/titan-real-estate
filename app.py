@@ -349,12 +349,18 @@ with tab2:
                     with st.container(border=True):
                         # 🌟 전유부 (호수 입력 시)
                         if ho_input:
-                            전용_df = bld_df[bld_df['전유공용구분'] == '전유']
-                            공용_df = bld_df[bld_df['전유공용구분'] == '공용']
+                            # 🚨 에러 차단 방어막: '전유공용구분' 데이터가 아예 없는 경우를 대비!
+                            if '전유공용구분' in bld_df.columns:
+                                전용_df = bld_df[bld_df['전유공용구분'] == '전유']
+                                공용_df = bld_df[bld_df['전유공용구분'] == '공용']
+                                if 전용_df.empty: 전용_df = bld_df
+                            else:
+                                전용_df = bld_df
+                                공용_df = pd.DataFrame()
                             
-                            # 여러 줄로 나뉜 면적을 깔끔하게 자동 합산
-                            전용면적 = 전용_df['면적(㎡)'].astype(float).sum() if not 전용_df.empty else 0
-                            공용면적 = 공용_df['면적(㎡)'].astype(float).sum() if not 공용_df.empty else 0
+                            # 빈 데이터일 경우 에러 방지용 안전 계산
+                            전용면적 = 전용_df['면적(㎡)'].astype(float).sum() if '면적(㎡)' in 전용_df.columns and not 전용_df.empty else 0
+                            공용면적 = 공용_df['면적(㎡)'].astype(float).sum() if '면적(㎡)' in 공용_df.columns and not 공용_df.empty else 0
                             계약면적 = 전용면적 + 공용면적
                             
                             main_row = 전용_df.iloc[0] if not 전용_df.empty else bld_df.iloc[0]
@@ -367,7 +373,6 @@ with tab2:
                             st.markdown(f"#### 🏢 명칭: {full_name}")
                             st.divider()
                             
-                            # 🌟 마크다운 표로 글씨 잘림 방지 및 실제 공문서 느낌 구현
                             st.markdown(f"""
                             | 구분 | 상세 내용 | 구분 | 상세 내용 |
                             |:---:|---|:---:|---|
@@ -384,9 +389,8 @@ with tab2:
                             bld_name = main_row.get('건물명', '')
                             
                             use_day = str(main_row.get('사용승인일', '-'))
-                            use_day_fmt = f"{use_day[:4]}년 {use_day[4:6]}월 {use_day[6:8]}일" if len(use_day)==8 else use_day
+                            use_day_fmt = f"{use_day[:4]}년 {use_day[4:6]}월 {use_day[6:8]}일" if len(use_day)==8 and use_day.isdigit() else use_day
                             
-                            # 흩어진 주차대수 합산
                             total_parking = sum([int(main_row.get(p, 0)) for p in ['옥외기계식', '옥외자주식', '옥내기계식', '옥내자주식'] if pd.notna(main_row.get(p)) and str(main_row.get(p)).isdigit()])
                             
                             st.markdown(f"### 📄 일반건축물대장 [표제부] 요약")
