@@ -167,7 +167,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수 (비밀 지번 & 유령 대장 회피 엔진!)
+# 🌟 [기능 2] 건축물대장 처리 함수 (비밀 지번 & 유령 대장 완벽 회피 엔진!)
 # ==========================================
 import re 
 import pandas as pd
@@ -240,13 +240,13 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
         if t_clean in dongs_in_bld: return True
         return False
 
-    # 🌟 [특급 엔진] 대단지 아파트는 '일반 대지(0)'에 유령 대장을 남기고, 진짜 데이터는 '블록(2)'에 숨겨둡니다.
-    # 그래서 platGbCd를 0과 2 모두 강력하게 스캔합니다!
+    # 🌟 [특급 엔진] 대단지 아파트는 '일반 대지(0)'에 유령 대장을 남기고, 진짜 데이터는 '로트(3)'나 '블록(2)'에 숨겨둡니다.
+    # 그래서 platGbCd를 0, 2, 3 모두 강력하게 스캔하여 진짜 면적이 있는 대장만 골라냅니다!
     search_bun, search_ji, search_plat_gb = bun, ji, plat_gb_cd
     mapped_db_dong = None 
     found_real_record = False
     
-    plat_candidates = ['1'] if plat_gb_cd == '1' else ['0', '2']
+    plat_candidates = ['0', '3', '2'] if plat_gb_cd != '1' else ['1']
     
     for p_gb in plat_candidates:
         title_url = f"http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={p_gb}&bun={bun}&ji={ji}&numOfRows=1000&pageNo=1"
@@ -260,30 +260,30 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
                 d_val = str(item.get('dongNm', ''))
                 b_val = str(item.get('bldNm', ''))
                 
-                # 유령 대장 필터링: 건물명도 없고 동명칭도 없는 쓰레기 데이터는 버림
-                if not d_val and not b_val: continue
+                # 유령 대장 판별: 연면적(totArea)이 아예 0이거나 빈칸이면 가짜 데이터이므로 무시!
+                tot_area = item.get('totArea', '0')
+                try: tot_area_f = float(str(tot_area).replace(',',''))
+                except: tot_area_f = 0.0
+                
+                if tot_area_f <= 0.0:
+                    continue
                     
                 if target_dong:
                     if is_dong_match(target_dong, d_val, b_val):
                         search_bun = str(item.get('bun', bun)).zfill(4)
                         search_ji = str(item.get('ji', ji)).zfill(4)
-                        search_plat_gb = str(item.get('platGbCd', p_gb))
+                        search_plat_gb = p_gb
                         mapped_db_dong = d_val 
                         found_real_record = True
                         break
                 else:
-                    search_plat_gb = str(item.get('platGbCd', p_gb))
+                    search_plat_gb = p_gb
                     found_real_record = True
                     break
             if found_real_record: break
         except Exception as e:
             pass
 
-    # 만약 위에서 못 찾았다면, 껍데기만 있는 '0' 대신 진짜일 확률이 높은 '2(블록)'로 강제 변환
-    if not found_real_record and plat_gb_cd != '1':
-        search_plat_gb = '2'
-
-    # 🌟 [2단계] 찾아낸 '진짜 지번 코드(search_plat_gb)'로 전유부 싹쓸이 탐색
     if target_ho:
         base_url = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposInfo" 
     else:
@@ -293,9 +293,10 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
     status_text = st.empty()
     
     for page in range(1, 21):
-        gb_name = "특수 블록/로트" if search_plat_gb == '2' else "일반 대지"
+        # 유저가 알기 쉽게 탐색 중인 비밀 지번 코드를 화면에 표시
+        gb_name = "특수 로트(3)" if search_plat_gb == '3' else ("특수 블록(2)" if search_plat_gb == '2' else "일반 대지(0)")
         if target_ho:
-            status_text.info(f"⏳ 국토부 비밀 지번({gb_name})을 추적하여 진짜 전유부를 싹쓸이 탐색 중입니다... ({page}페이지)")
+            status_text.info(f"⏳ 국토부 비밀 지번코드[{gb_name}]를 추적하여 '진짜 전유부' 싹쓸이 탐색 중... ({page}페이지)")
         else:
             status_text.info(f"⏳ 건축물대장 데이터를 싹쓸이 탐색 중입니다... ({page}페이지)")
             
@@ -497,39 +498,43 @@ with tab2:
                         
                         shown_count = 0
                         for pk in unique_pks:
+                            group_df = bld_df[bld_df['관리대장PK'] == pk] if pk else bld_df
+                            
+                            if '전유공용구분' in group_df.columns:
+                                is_jeonyu = group_df['전유공용구분'].astype(str).str.contains('전유', na=False)
+                                is_gongyong = group_df['전유공용구분'].astype(str).str.contains('공용', na=False)
+                                
+                                전용_df = group_df[is_jeonyu]
+                                공용_df = group_df[is_gongyong]
+                                if 전용_df.empty: 전용_df = group_df
+                            else:
+                                전용_df = group_df
+                                공용_df = pd.DataFrame()
+                            
+                            def safe_float(val):
+                                try: return float(str(val).replace(',', '').strip())
+                                except: return 0.0
+                            
+                            area_col = '면적(㎡)' if '면적(㎡)' in group_df.columns else ('area' if 'area' in group_df.columns else None)
+                            
+                            if area_col:
+                                전용면적 = sum(safe_float(x) for x in 전용_df[area_col]) if not 전용_df.empty else 0.0
+                                공용면적 = sum(safe_float(x) for x in 공용_df[area_col]) if not 공용_df.empty else 0.0
+                            else:
+                                전용면적, 공용면적 = 0.0, 0.0
+                                
+                            계약면적 = 전용면적 + 공용면적
+                            
+                            # 🌟 유령 대장 스킵: 면적이 0인 가짜 데이터는 화면에 띄우지 않고 아예 버립니다!
+                            if 계약면적 <= 0.0 and len(unique_pks) > 1:
+                                continue
+                                
                             if shown_count >= 5:
-                                st.info("💡 너무 많은 세대가 조회되어 상위 5개만 문서로 보여드립니다. 전체 내역은 맨 아래 원본 표를 확인하세요.")
+                                st.info("💡 여러 세대가 조회되어 상위 5개만 문서로 보여드립니다. 전체 내역은 맨 아래 원본 표를 확인하세요.")
                                 break
                             shown_count += 1
                             
-                            group_df = bld_df[bld_df['관리대장PK'] == pk] if pk else bld_df
-                            
                             with st.container(border=True):
-                                if '전유공용구분' in group_df.columns:
-                                    is_jeonyu = group_df['전유공용구분'].astype(str).str.contains('전유', na=False)
-                                    is_gongyong = group_df['전유공용구분'].astype(str).str.contains('공용', na=False)
-                                    
-                                    전용_df = group_df[is_jeonyu]
-                                    공용_df = group_df[is_gongyong]
-                                    if 전용_df.empty: 전용_df = group_df
-                                else:
-                                    전용_df = group_df
-                                    공용_df = pd.DataFrame()
-                                
-                                def safe_float(val):
-                                    try: return float(str(val).replace(',', '').strip())
-                                    except: return 0.0
-                                
-                                area_col = '면적(㎡)' if '면적(㎡)' in group_df.columns else ('area' if 'area' in group_df.columns else None)
-                                
-                                if area_col:
-                                    전용면적 = sum(safe_float(x) for x in 전용_df[area_col]) if not 전용_df.empty else 0.0
-                                    공용면적 = sum(safe_float(x) for x in 공용_df[area_col]) if not 공용_df.empty else 0.0
-                                else:
-                                    전용면적, 공용면적 = 0.0, 0.0
-                                    
-                                계약면적 = 전용면적 + 공용면적
-                                
                                 main_row = 전용_df.iloc[0] if not 전용_df.empty else group_df.iloc[0]
                                 addr = get_clean_val(main_row, '도로명주소', get_clean_val(main_row, '대지위치', '-'))
                                 b_nm = get_clean_val(main_row, '건물명', '')
@@ -560,6 +565,9 @@ with tab2:
                                 | **공용면적** | {공용면적:,.2f} ㎡ | **구조** | {get_clean_val(main_row, '구조')} |
                                 | **계약면적(총)**| <span style='color:#d93025; font-weight:bold; font-size:1.1em;'>{계약면적:,.2f} ㎡</span> | **대지권지분** | 등기부등본 확인 요망 |
                                 """, unsafe_allow_html=True)
+                                
+                        if shown_count == 0:
+                            st.warning("🚨 조회된 세대가 있으나, 국토부 전산상 면적이 모두 0.00으로 기재된 '누락 대장(유령 대장)'만 존재합니다. 아래 원본 데이터를 확인해주세요.")
                                 
                         with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기"):
                             st.info("아래 표는 파이썬이 국토부 서버에서 받아온 원본 데이터 전체입니다. 전산에 실제 등록된 '동명칭'을 확인하실 수 있습니다.")
