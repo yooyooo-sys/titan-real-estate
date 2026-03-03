@@ -167,7 +167,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수 (V20: 전수조사 및 클로드 오류 수정)
+# 🌟 [기능 2] 건축물대장 처리 함수 (V21: 무적의 에러 방어막 탑재)
 # ==========================================
 import re 
 import pandas as pd
@@ -227,7 +227,6 @@ def fetch_molit_api(base_url, sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, status_tex
         
         success = False
         xml_data = {}
-        # 서버 응답 지연을 대비한 재시도 로직 강화
         for _ in range(3):
             try:
                 res = requests.get(url, timeout=15)
@@ -253,11 +252,10 @@ def get_comprehensive_ledger(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong
     plat_candidates = ['3', '2', '0'] if plat_gb_cd != '1' else ['1']
     status_text = st.empty()
     
-    # URL 롤백 및 고정: 클로드가 제안한 잘못된 전유부 API(getBrExposPubuseAreaInfo)를 정규 API로 원복
-    URL_BASIS = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrRecapTitleInfo" # 총괄표제부
-    URL_TITLE = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo"     # 표제부
-    URL_EXPOS = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposInfo"     # 전유부 (원복 완료)
-    URL_FLOOR = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrFlrOulnInfo"     # 층별개요
+    URL_BASIS = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrRecapTitleInfo" 
+    URL_TITLE = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo"     
+    URL_EXPOS = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposInfo"     
+    URL_FLOOR = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrFlrOulnInfo"     
 
     def match_dong(t_dong, d_val, b_val):
         if not t_dong: return True
@@ -324,7 +322,7 @@ def get_comprehensive_ledger(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong
             found_plat_gb = p_gb
             break
 
-    # 2️⃣ 총괄표제부 탐색
+    # 2️⃣ 총괄표제부 탐색 
     df_basis = pd.DataFrame()
     for p_gb in ['0', '2', '3', '1']: 
         basis_items = fetch_molit_api(URL_BASIS, sgg_cd, bjdong_cd, p_gb, bun, ji, status_text, f"[지번코드 {p_gb}] 총괄표제부 탐색", max_pages=2)
@@ -333,7 +331,7 @@ def get_comprehensive_ledger(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong
             df_basis = pd.DataFrame(valid_basis)
             break 
 
-    # 3️⃣ 전유부 탐색 (데이터 누락 방지를 위해 max_pages=50 설정)
+    # 3️⃣ 전유부 탐색 
     df_expos = pd.DataFrame()
     is_missing_area = False
     
@@ -358,7 +356,7 @@ def get_comprehensive_ledger(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong
                     is_missing_area = True
                 break
 
-    # 4️⃣ 층별개요 탐색 (데이터 누락 방지를 위해 max_pages=50 설정)
+    # 4️⃣ 층별개요 탐색 
     df_floor = pd.DataFrame()
     if target_dong:
         for p_gb in plat_candidates:
@@ -375,7 +373,6 @@ def get_comprehensive_ledger(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong
                 
             if not temp_floor.empty:
                 df_floor = temp_floor
-                # 층별 정렬 로직 추가
                 if 'flrNo' in df_floor.columns:
                     df_floor['flrNo_num'] = pd.to_numeric(df_floor['flrNo'], errors='coerce').fillna(0)
                     df_floor = df_floor.sort_values(by='flrNo_num', ascending=False).drop(columns=['flrNo_num'])
@@ -464,20 +461,23 @@ with tab2:
                     def safe_val(val, default='-'):
                         return default if pd.isna(val) or str(val).strip() in ['None', '', 'nan'] else str(val).strip()
 
-                    # 🚨 위반건축물 감지 로직 (우선순위: 표제부 -> 총괄표제부)
+                    # 🚨 위반건축물 감지 로직 (KeyError 완벽 방어막 적용!)
                     is_violating = False
-                    if not df_title.empty:
+                    if not df_title.empty and 'violBldYn' in df_title.columns:
                         if '1' in df_title['violBldYn'].astype(str).values:
                             is_violating = True
-                    elif not df_basis.empty and str(df_basis.iloc[0].get('violBldYn', '0')) == '1':
-                        is_violating = True
+                    elif not df_basis.empty and 'violBldYn' in df_basis.columns:
+                        if '1' in df_basis['violBldYn'].astype(str).values:
+                            is_violating = True
 
                     if is_violating:
                         st.error("🚨 **[주의] 위반건축물로 등록된 대장입니다!** 해당 건축물은 건축법 위반 사항이 존재하므로 중개 시 반드시 정부24 원본 서류를 확인하여 위반 내용을 확인해야 합니다.")
 
-                    # 🟩 [섹션 1] 총괄표제부
+                    # 🟩 [섹션 1] 총괄표제부 (KeyError 완벽 방어막 적용!)
                     if not df_basis.empty:
-                        df_basis['totArea_num'] = pd.to_numeric(df_basis['totArea'].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+                        tot_area_series = df_basis['totArea'] if 'totArea' in df_basis.columns else pd.Series('0', index=df_basis.index)
+                        df_basis['totArea_num'] = pd.to_numeric(tot_area_series.astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+                        
                         valid_basis = df_basis[df_basis['totArea_num'] > 0]
                         row_b = valid_basis.iloc[0] if not valid_basis.empty else df_basis.iloc[0]
 
@@ -499,19 +499,24 @@ with tab2:
                         
                         for pk in unique_pks[:3]:
                             grp = df_expos[df_expos['mgmBldrgstPk'] == pk] if pk else df_expos
-                            is_j = grp['exposPubuseGbCdNm'].astype(str).str.contains('전유', na=False)
-                            is_g = grp['exposPubuseGbCdNm'].astype(str).str.contains('공용', na=False)
                             
-                            df_j = grp[is_j]
-                            df_g = grp[is_g]
+                            if 'exposPubuseGbCdNm' in grp.columns:
+                                is_j = grp['exposPubuseGbCdNm'].astype(str).str.contains('전유', na=False)
+                                is_g = grp['exposPubuseGbCdNm'].astype(str).str.contains('공용', na=False)
+                                df_j = grp[is_j]
+                                df_g = grp[is_g]
+                            else:
+                                df_j = grp
+                                df_g = pd.DataFrame()
+                                
                             if df_j.empty: df_j = grp
                             
                             def s_float(v):
                                 try: return float(str(v).replace(',', '').strip())
                                 except: return 0.0
                                 
-                            j_area = sum(s_float(x) for x in df_j['area']) if not is_missing_area else 0.0
-                            g_area = sum(s_float(x) for x in df_g['area']) if not is_missing_area else 0.0
+                            j_area = sum(s_float(x) for x in df_j.get('area', [])) if not is_missing_area else 0.0
+                            g_area = sum(s_float(x) for x in df_g.get('area', [])) if not is_missing_area else 0.0
                             t_area = j_area + g_area
                             
                             m_row = df_j.iloc[0]
