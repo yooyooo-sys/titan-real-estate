@@ -395,19 +395,21 @@ with tab1:
         else:
             sigungu_code, full_region_name = get_sigungu_code(sigungu_name, dong_name)
             if sigungu_code:
+                display_dong = dong_name.strip() if dong_name.strip() else "전체"
                 st.success(f"✅ 지역 변환 성공: {full_region_name} ({sigungu_code})")
                 real_data_df = get_real_estate_data(sigungu_code, start_month, end_month, dong_name, property_type, transaction_type)
                 if not real_data_df.empty:
                     real_data_df.index = range(1, len(real_data_df) + 1)
+                    st.subheader(f"📊 {sigungu_name} {display_dong} {property_type} {transaction_type} ({start_month}~{end_month}) - 총 {len(real_data_df)}건")
                     st.dataframe(real_data_df, use_container_width=True)
                     excel_buffer = BytesIO()
                     with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
                         real_data_df.to_excel(writer, index=True, index_label='순번', sheet_name='실거래가')
-                    st.download_button("📥 엑셀 파일로 다운로드", data=excel_buffer.getvalue(), file_name=f"실거래가.xlsx")
+                    st.download_button("📥 엑셀 파일로 다운로드", data=excel_buffer.getvalue(), file_name=f"{sigungu_name}_{display_dong}_{property_type}_{transaction_type}.xlsx")
             else:
-                st.error("지역을 찾을 수 없습니다.")
+                st.error("지역을 찾을 수 없습니다. 오타가 없는지 확인해주세요.")
 
-# ----------------- [탭 2] 건축물대장 (안전 렌더링 폼) -----------------
+# ----------------- [탭 2] 건축물대장 (한계 명시 & 스마트 안내 폼) -----------------
 with tab2:
     st.subheader("📋 특정 지번 건축물대장 (표제/전유부) 요약")
     st.info("💡 대단지 아파트는 **'동'**과 **'호수'**를 함께 입력하시고, 동이 없는 빌라/단독주택은 동 칸을 비워두세요.")
@@ -415,11 +417,11 @@ with tab2:
     with st.form("bldrgst_form"):
         col1, col2, col3 = st.columns([2, 1, 1])
         with col1:
-            address_input = st.text_input("조회할 텍스트 주소 (필수)", placeholder="예: 상도동 360-4 또는 상도동 450")
+            address_input = st.text_input("조회할 텍스트 주소 (필수)", placeholder="예: 상도동 360-4 또는 서계동 245-11")
         with col2:
             dong_input = st.text_input("동 (선택)", placeholder="예: 105")
         with col3:
-            ho_input = st.text_input("호수 (선택)", placeholder="예: 301")
+            ho_input = st.text_input("호수 (선택)", placeholder="예: 202")
             
         bld_submitted = st.form_submit_button("🔍 건축물대장 요약 문서 열람")
         
@@ -445,14 +447,12 @@ with tab2:
 
                     # 🌟 전유부 (호수 입력 시)
                     if ho_input:
-                        # PK 기준으로 묶어서 출력 (빌라/아파트 모두 동일 적용)
                         unique_pks = bld_df['mgmBldrgstPk'].unique() if 'mgmBldrgstPk' in bld_df.columns else [None]
                         shown_count = 0
                         
                         for pk in unique_pks:
                             group_df = bld_df[bld_df['mgmBldrgstPk'] == pk] if pk else bld_df
                             
-                            # KeyError 방지용 안전한 필터링!
                             if '전유공용구분' in group_df.columns:
                                 is_jeonyu = group_df['전유공용구분'].astype(str).str.contains('전유', na=False)
                                 is_gongyong = group_df['전유공용구분'].astype(str).str.contains('공용', na=False)
@@ -501,19 +501,27 @@ with tab2:
                                 st.markdown(f"### 📄 집합건축물대장 [전유부] 요약")
                                 st.markdown(f"#### 📍 주소: {addr}")
                                 st.markdown(f"#### 🏢 명칭: {full_name}")
+                                
+                                # 🌟 소유자 정보 누락에 대한 명확한 법적 안내 (브리핑 시 고객에게 설명하기 좋게 구성)
+                                st.error("🔒 **[소유자 정보 비공개]** 개인정보보호법에 의거, 국토교통부 오픈 API에서는 소유자 성명 및 주민등록번호를 제공하지 않습니다. 해당 정보는 정부24 민원 발급을 통해 확인하셔야 합니다.")
                                 st.divider()
                                 
+                                # 🌟 면적이 0일 경우, 0.00㎡ 대신 국토부 API 누락임을 강렬하게 표시!
+                                jeon_area_str = f"<span style='color:#0066cc; font-weight:bold; font-size:1.1em;'>{전용면적:,.2f} ㎡</span>" if 전용면적 > 0 else "<span style='color:red;'>⚠️ 국토부 API 데이터 누락 (원본발급 요망)</span>"
+                                gong_area_str = f"{공용면적:,.2f} ㎡" if 공용면적 > 0 else "<span style='color:red;'>⚠️ 누락</span>"
+                                total_area_str = f"<span style='color:#d93025; font-weight:bold; font-size:1.1em;'>{계약면적:,.2f} ㎡</span>" if 계약면적 > 0 else "<span style='color:red;'>⚠️ 확인 불가</span>"
+
                                 st.markdown(f"""
                                 | 구분 | 상세 내용 | 구분 | 상세 내용 |
                                 |:---:|---|:---:|---|
                                 | **주용도** | {get_clean_val(main_row, '주용도')} | **해당 층** | {get_clean_val(main_row, '해당층')} |
-                                | **전용면적** | <span style='color:#0066cc; font-weight:bold; font-size:1.1em;'>{전용면적:,.2f} ㎡</span> | **기타용도** | {get_clean_val(main_row, '기타용도')} |
-                                | **공용면적** | {공용면적:,.2f} ㎡ | **구조** | {get_clean_val(main_row, '구조')} |
-                                | **계약면적(총)**| <span style='color:#d93025; font-weight:bold; font-size:1.1em;'>{계약면적:,.2f} ㎡</span> | **대지권지분** | 등기부등본 확인 요망 |
+                                | **전용면적** | {jeon_area_str} | **기타용도** | {get_clean_val(main_row, '기타용도')} |
+                                | **공용면적** | {gong_area_str} | **구조** | {get_clean_val(main_row, '구조')} |
+                                | **계약면적(총)**| {total_area_str} | **대지권지분** | 등기부등본 확인 요망 |
                                 """, unsafe_allow_html=True)
                                 
                         with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기"):
-                            st.info("아래 표는 파이썬이 국토부 서버에서 받아온 날것의 원본 데이터입니다. 면적이 0.00으로 나오면, 원본 표에도 면적이 비어있기 때문입니다.")
+                            st.info("아래 표는 파이썬이 국토부 서버에서 받아온 날것의 원본 데이터입니다. 면적 칸에 빨간색 경고가 떴다면, 아래 원본 표에도 면적(area) 항목이 아예 비어있기 때문입니다. (주로 2010년 이전 구축 빌라에서 나타나는 국토부 시스템 한계입니다.)")
                             st.dataframe(bld_df.drop(columns=['mgmBldrgstPk', 'sigunguCd', 'bjdongCd', 'platGbCd', 'bun', 'ji', 'regstrGbCd', 'regstrKindCd'], errors='ignore'))
 
                     # 🌟 표제부 (호수 미입력 시)
@@ -530,6 +538,8 @@ with tab2:
                             st.markdown(f"### 📄 일반건축물대장 [표제부] 요약")
                             st.markdown(f"#### 📍 주소: {addr}")
                             if bld_name or dong_title: st.markdown(f"#### 🏢 명칭: {bld_name}{dong_title}")
+                            
+                            st.error("🔒 **[소유자 정보 비공개]** 개인정보보호법에 의거, 국토교통부 오픈 API에서는 소유자 성명 및 주민등록번호를 제공하지 않습니다.")
                             st.divider()
                             
                             st.markdown(f"""
