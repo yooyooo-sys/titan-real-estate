@@ -292,63 +292,65 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
         if valid:
             df_recap = pd.DataFrame(valid); break
 
-    # ─────────────────────────────────────────────────────────
     # STEP 3: 전유공용면적
-    # 탐색 순서:
-    #   ① platPlc 파싱 지번 + dongNm + hoNm API 파라미터 직접 전달
-    #   ② dongNm 없이 hoNm만으로 재시도 (동명 불일치 대비)
-    #   ③ 부속지번 전체 탐색 (최후 fallback)
-    # ─────────────────────────────────────────────────────────
     status.info("🏠 전유공용면적 수집 중...")
     df_expos        = pd.DataFrame()
     is_missing_area = False
 
     if target_ho:
-        # API에 넘길 동명/호명 정리
-        api_dong_nm = ""
-        if target_dong:
-            t = target_dong.strip()
-            api_dong_nm = t if t.endswith("동") else t + "동"
-
         # ★ hoNm: "호" 제거 (API DB는 숫자만 저장)
         api_ho_nm = re.sub(r'호$', '', target_ho.strip())
 
+        # dongNm 처리: "동" 없는 숫자형 + "동" 붙인 형 둘 다 준비
+        dong_num = re.sub(r'동$', '', target_dong.strip()) if target_dong else ""
+        dong_with_suffix = dong_num + "동" if dong_num else ""
+
         found = False
-        # platPlc 지번 우선, 그 다음 부속지번
+        # platPlc 파싱 지번 우선, 그 다음 부속지번
         search_jibun = target_exact_jibun + [j for j in all_jibun if j not in target_exact_jibun]
 
-        # ① dongNm + hoNm 둘 다 전달
         for (js, jb, jp, jbun, jji) in search_jibun:
             if found: break
             for p_gb in ([jp] + [x for x in plat_cands if x != jp]):
-                items = fetch_expos_api(
-                    js, jb, p_gb, jbun, jji,
-                    dong_nm=api_dong_nm,
-                    ho_nm=api_ho_nm,
-                    max_pages=10
-                )
-                if not items: continue
-                df_expos = pd.DataFrame(items)
-                if "area" not in df_expos.columns:
-                    df_expos["area"] = "0"; is_missing_area = True
-                found = True; break
 
-        # ② dongNm 없이 hoNm만으로 재시도
-        if not found:
-            for (js, jb, jp, jbun, jji) in search_jibun:
-                if found: break
-                for p_gb in ([jp] + [x for x in plat_cands if x != jp]):
+                # ━━━ 시도 순서 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                # ① platPlc 정확 지번이면 dongNm 없이 hoNm만 (가장 안전)
+                # ② dongNm 숫자형 + hoNm
+                # ③ dongNm 동접미사형 + hoNm
+                # ④ dongNm, hoNm 모두 없이 전체 조회 후 클라이언트 필터
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                is_exact = (js, jb, jp, jbun, jji) in target_exact_jibun
+
+                attempts = []
+                if is_exact:
+                    # 정확한 지번 → dongNm 없이 hoNm만
+                    attempts.append(("", api_ho_nm))
+                if dong_num:
+                    attempts.append((dong_num, api_ho_nm))          # "106"
+                    attempts.append((dong_with_suffix, api_ho_nm))  # "106동"
+                attempts.append(("", api_ho_nm))   # dongNm 없이 hoNm만 (fallback)
+                attempts.append(("", ""))           # 전체 조회 후 클라이언트 필터
+
+                for (try_dong, try_ho) in attempts:
                     items = fetch_expos_api(
                         js, jb, p_gb, jbun, jji,
-                        dong_nm="",
-                        ho_nm=api_ho_nm,
+                        dong_nm=try_dong,
+                        ho_nm=try_ho,
                         max_pages=10
                     )
                     if not items: continue
+
                     tmp = pd.DataFrame(items)
                     tmp["dongNm"] = tmp.apply(lambda r: restore(r, "dongNm"), axis=1)
                     tmp["bldNm"]  = tmp.apply(lambda r: restore(r, "bldNm"),  axis=1)
-                    if target_dong:
+
+                    # hoNm 클라이언트 필터 (전체 조회 시)
+                    if not try_ho:
+                        tmp = tmp[tmp.apply(lambda r: match_ho(target_ho, r.get("hoNm","")), axis=1)]
+                    if tmp.empty: continue
+
+                    # dongNm 클라이언트 필터 (외필지 오매칭 방지)
+                    if target_dong and not is_exact:
                         m_pk = tmp[tmp["mgmBldrgstPk"].isin(target_pks)] \
                                if ("mgmBldrgstPk" in tmp.columns and target_pks) else pd.DataFrame()
                         m_name = tmp[tmp.apply(
@@ -357,11 +359,14 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                         if not m_pk.empty:     tmp = m_pk
                         elif not m_name.empty: tmp = m_name
                         else: continue
+
                     if tmp.empty: continue
                     df_expos = tmp.copy()
                     if "area" not in df_expos.columns:
                         df_expos["area"] = "0"; is_missing_area = True
                     found = True; break
+                if found: break
+
 
     # STEP 4: 층별개요 (platPlc 지번 우선)
     status.info("🪜 층별개요 수집 중...")
