@@ -1,5 +1,5 @@
 # ============================================================
-# 부동산 올인원 봇 — 실거래가 + 건축물대장 최종 완성본 v10
+# 부동산 올인원 봇 — 실거래가 + 건축물대장 최종 완성본 v11
 # ============================================================
 import streamlit as st
 import pandas as pd
@@ -83,7 +83,7 @@ def get_bjdong_code(search_term):
     try:
         data = requests.get(url, timeout=10).json()
         if data.get("StanReginCd"):
-            rows = data["StanReginCd"][1]["row"]
+            rows   = data["StanReginCd"][1]["row"]
             active = [r for r in rows if r["sido_cd"] != "" and r["sgg_cd"] != ""]
             if active:
                 rc = active[0]["region_cd"]
@@ -112,9 +112,9 @@ def match_dong(target, dong_nm, bld_nm):
 def is_different_dong(target, dong_nm, bld_nm):
     """
     동이 명백히 다름을 판단.
-    - dongNm/bldNm 모두 비어있으면 False (판단 불가 → 허용)
-    - match_dong이 True면 같은 동 → False
-    - 값이 있는데 match 실패 → 명백히 다른 동 → True
+    dongNm/bldNm 모두 빈값이면 False (판단불가 → 허용)
+    match_dong True면 같은 동 → False
+    값이 있는데 match 실패 → 명백히 다른 동 → True
     """
     if not target: return False
     d = str(dong_nm).strip(); b = str(bld_nm).strip()
@@ -156,7 +156,7 @@ def fetch_bld_api(endpoint, sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=50):
     return all_items
 
 def fetch_expos_all(sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=20):
-    """API dongNm/hoNm 파라미터 없이 전체 조회 — 클라이언트에서 필터링"""
+    """API dongNm/hoNm 파라미터 없이 전체 조회"""
     return fetch_bld_api(URL_EXPOS, sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=max_pages)
 
 def get_all_jibun(sgg_cd, bjdong_cd, plat_gb, bun, ji):
@@ -246,14 +246,23 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
         if valid:
             df_recap = pd.DataFrame(valid); break
 
-        # STEP 3: 전유공용면적
+    # ─────────────────────────────────────────────────────
+    # STEP 3: 전유공용면적
+    #
+    # ① hoNm 클라이언트 필터 (필수)
+    # ② 동 필터 — 3단계 우선순위 (항상 적용):
+    #    1순위: mgmBldrgstPk 일치
+    #    2순위: dongNm/bldNm 일치
+    #    3순위: 명백히 다른 동(is_different_dong)만 제거
+    #           dongNm 빈값 = 판단불가 → 허용
+    # ─────────────────────────────────────────────────────
     status.info("🏠 전유공용면적 수집 중...")
     df_expos        = pd.DataFrame()
     is_missing_area = False
+    expos_debug_log = []
 
     if target_ho:
         found        = False
-        # platPlc 파싱 지번 우선, 나머지 부속지번 fallback
         search_jibun = target_exact_jibun + [j for j in all_jibun if j not in target_exact_jibun]
 
         for (js, jb, jp, jbun, jji) in search_jibun:
@@ -267,36 +276,54 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 tmp["dongNm"] = tmp.apply(lambda r: restore(r,"dongNm"), axis=1)
                 tmp["bldNm"]  = tmp.apply(lambda r: restore(r,"bldNm"),  axis=1)
 
-                # ① hoNm 필터 (필수)
-                tmp = tmp[tmp.apply(lambda r: match_ho(target_ho, r.get("hoNm","")), axis=1)]
+                # hoNm 매칭
+                ho_matched = tmp[tmp.apply(lambda r: match_ho(target_ho, r.get("hoNm","")), axis=1)]
+
+                # 디버그 로그
+                if not ho_matched.empty:
+                    expos_debug_log.append({
+                        "지번": f"bun={jbun} ji={jji} platGb={p_gb}",
+                        "전체건수": len(tmp),
+                        "hoNm매칭건수": len(ho_matched),
+                        "hoNm목록":   ho_matched["hoNm"].tolist()[:10],
+                        "dongNm목록": ho_matched["dongNm"].tolist()[:10],
+                        "bldNm목록":  ho_matched["bldNm"].tolist()[:10],
+                        "pk목록":     ho_matched.get("mgmBldrgstPk", pd.Series()).tolist()[:10],
+                    })
+
+                # ① hoNm 필터
+                tmp = ho_matched
                 if tmp.empty: continue
 
-                # ② 동 필터 — is_exact_jibun 예외 없이 항상 적용
+                # ② 동 필터
                 if target_dong:
-                    # 1순위: mgmBldrgstPk 일치
                     m_pk = tmp[tmp["mgmBldrgstPk"].isin(target_pks)] \
                            if ("mgmBldrgstPk" in tmp.columns and target_pks) else pd.DataFrame()
-                    # 2순위: dongNm/bldNm 일치
                     m_name = tmp[tmp.apply(
                         lambda r: match_dong(target_dong, r.get("dongNm",""), r.get("bldNm","")), axis=1
                     )]
                     if not m_pk.empty:
                         tmp = m_pk
+                        expos_debug_log.append({"동필터": "1순위 pk 일치", "건수": len(tmp)})
                     elif not m_name.empty:
                         tmp = m_name
+                        expos_debug_log.append({"동필터": "2순위 dongNm 일치", "건수": len(tmp)})
                     else:
-                        # 3순위: 명백히 다른 동만 제거, dongNm 빈값(판단불가)은 허용
+                        before = len(tmp)
                         tmp = tmp[~tmp.apply(
                             lambda r: is_different_dong(target_dong, r.get("dongNm",""), r.get("bldNm","")), axis=1
                         )]
+                        expos_debug_log.append({"동필터": "3순위 is_different_dong", "필터전": before, "필터후": len(tmp)})
 
-                if tmp.empty: continue
+                if tmp.empty:
+                    expos_debug_log.append({"결과": "동필터 후 empty → 다음 지번 탐색"})
+                    continue
+
                 df_expos = tmp.copy()
                 if "area" not in df_expos.columns:
                     df_expos["area"] = "0"; is_missing_area = True
                 found = True; break
             if found: break
-
 
     # STEP 4: 층별개요
     status.info("🪜 층별개요 수집 중...")
@@ -327,7 +354,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 found = True; break
 
     status.empty()
-    return df_recap, df_titles, df_expos, df_floor, is_missing_area, len(all_jibun), target_exact_jibun
+    return df_recap, df_titles, df_expos, df_floor, is_missing_area, len(all_jibun), target_exact_jibun, expos_debug_log
 
 # ─────────────────────────────────────────────────────────────
 # 실거래가 함수
@@ -500,14 +527,15 @@ with tab2:
 
         st.success(f"✅ {full_loc}  본번:{bun}  부번:{ji}")
 
-        df_recap, df_titles, df_expos, df_floor, is_missing_area, jibun_cnt, exact_jibun = get_building_ledger(
+        df_recap, df_titles, df_expos, df_floor, is_missing_area, jibun_cnt, exact_jibun, expos_debug_log = get_building_ledger(
             sgg_cd, bjdong_cd, plat_gb, bun, ji, dong_in, ho_in
         )
 
+        # 디버그 expander
         with st.expander("🔍 디버그 정보 (조회 안 될 때 확인)", expanded=False):
             st.write(f"**탐색 필지 수:** {jibun_cnt}개")
             if exact_jibun:
-                st.write(f"**{dong_in}동 실제 지번 (platPlc 파싱):**")
+                st.write(f"**{dong_in or ''}동 실제 지번 (platPlc 파싱):**")
                 for j in exact_jibun:
                     st.code(f"sigunguCd={j[0]}, bjdongCd={j[1]}, platGbCd={j[2]}, bun={j[3]}, ji={j[4]}")
             else:
@@ -516,9 +544,16 @@ with tab2:
                 matched = df_titles[df_titles.apply(
                     lambda r: match_dong(dong_in, r.get("dongNm",""), r.get("bldNm","")), axis=1
                 )]
-                st.write(f"**표제부 동 매칭 결과:** {len(matched)}건")
+                st.write(f"**표제부 동 매칭 결과:** {len(matched)}건  |  **target_pks:** {matched['mgmBldrgstPk'].tolist() if not matched.empty and 'mgmBldrgstPk' in matched.columns else []}")
                 if not matched.empty:
                     st.dataframe(matched[["dongNm","bldNm","platPlc","mgmBldrgstPk"]].head(5))
+            if ho_in:
+                if expos_debug_log:
+                    st.write("**전유공용면적 STEP 3 상세 로그:**")
+                    for log in expos_debug_log:
+                        st.json(log)
+                else:
+                    st.warning("⚠️ 전유공용면적: 모든 지번에서 hoNm 매칭 결과 0건")
 
         if df_recap.empty and df_titles.empty:
             st.error("🚨 조회 결과 없음. 지번 주소를 다시 확인해주세요."); st.stop()
@@ -661,7 +696,7 @@ with tab2:
                     "- 집합건물(아파트·오피스텔·도시형생활주택·다세대)만 존재합니다\n"
                     "- 호수 형식 확인 (예: 302호 → `302`)\n"
                     "- 단동 건물은 동 칸을 비워두세요\n"
-                    "- 위 '디버그 정보'를 열어서 지번 파싱 결과를 확인해주세요"
+                    "- 위 '디버그 정보'를 열어서 STEP 3 로그를 확인해주세요"
                 )
             else:
                 pks = df_expos["mgmBldrgstPk"].unique() if "mgmBldrgstPk" in df_expos.columns else [None]
