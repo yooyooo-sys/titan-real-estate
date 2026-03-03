@@ -167,7 +167,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수 (아파트/빌라 유니버설 하이브리드 엔진!)
+# 🌟 [기능 2] 건축물대장 처리 함수 (클로드 융합: 종합 대시보드 엔진!)
 # ==========================================
 import re 
 import pandas as pd
@@ -176,6 +176,10 @@ import xmltodict
 import time
 from io import BytesIO
 import streamlit as st
+
+# (주의) 아래 API 키는 대표님의 실제 키로 변경되어 있다고 가정합니다.
+# MOLIT_API_KEY = "대표님의_국토부_키"
+# DONG_API_KEY = "대표님의_행안부_키"
 
 def parse_address_for_bldrgst(address_str):
     parts = address_str.strip().split()
@@ -218,150 +222,136 @@ def get_full_bjdong_code(search_term):
         return None, None, None
     except: return None, None, None
 
-def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong="", target_ho=""):
+# 🌟 API 통신을 깔끔하게 하나로 합친 헬퍼 함수 (코드 최적화)
+def fetch_molit_api(base_url, sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, status_text, desc_prefix, max_pages=50):
+    all_items = []
+    for page in range(1, max_pages + 1):
+        url = f"{base_url}?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={plat_gb_cd}&bun={bun}&ji={ji}&numOfRows=1000&pageNo={page}"
+        if status_text:
+            status_text.info(f"⏳ {desc_prefix} 데이터 수집 중... ({page}페이지)")
+        
+        success = False
+        for _ in range(2):
+            try:
+                res = requests.get(url, timeout=10)
+                if res.text.strip().startswith('<'):
+                    xml_data = xmltodict.parse(res.content)
+                    if 'OpenAPI_ServiceResponse' not in xml_data:
+                        success = True; break
+            except: time.sleep(0.5)
+        if not success: break
+        
+        body = xml_data.get('response', {}).get('body', {})
+        items = body.get('items', {}).get('item', []) if body.get('items') else []
+        if isinstance(items, dict): items = [items]
+        all_items.extend(items)
+        
+        total_count = int(body.get('totalCount', 0))
+        if page * 1000 >= total_count: break
+    return all_items
+
+# 🌟 클로드 아이디어 융합: 다중 장부 동시 추출 종합 엔진
+def get_comprehensive_ledger(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong="", target_ho=""):
     plat_candidates = ['0', '2', '3'] if plat_gb_cd != '1' else ['1']
     status_text = st.empty()
     
-    # 🌟 1단계: '표제부'를 싹 긁어서 고유키(PK)와 동이름(dongNm) 매칭 사전 만들기
-    # 아파트의 끊어진 동 이름을 수리하기 위한 초강력 백업망입니다.
-    pk_map = {}
-    title_records = []
-    
-    for p_gb in plat_candidates:
-        for page in range(1, 6): # 표제부는 보통 5장이면 다 긁습니다.
-            url = f"http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={p_gb}&bun={bun}&ji={ji}&numOfRows=1000&pageNo={page}"
-            try:
-                res = requests.get(url, timeout=10)
-                if not res.text.strip().startswith('<'): continue
-                xml_data = xmltodict.parse(res.content)
-                if 'OpenAPI_ServiceResponse' in xml_data: break
-                
-                items = xml_data.get('response', {}).get('body', {}).get('items', {}).get('item', [])
-                if not items: break
-                if isinstance(items, dict): items = [items]
-                
-                for item in items:
-                    title_records.append(item)
-                    pk = item.get('mgmBldrgstPk')
-                    d_nm = item.get('dongNm', '')
-                    b_nm = item.get('bldNm', '')
-                    if pk: pk_map[pk] = {'dong': d_nm, 'bld': b_nm}
-                
-                if page * 1000 >= int(xml_data.get('response', {}).get('body', {}).get('totalCount', 0)): break
-            except: pass
+    URL_BASIS = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrBasisOulnInfo" # 총괄표제부
+    URL_TITLE = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo"     # 표제부
+    URL_EXPOS = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposInfo"     # 전유부
+    URL_FLOOR = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrFlrOulnInfo"     # 층별개요
 
-    # 호수(전유부) 검색이 아닐 경우 표제부 데이터 바로 반환
-    if not target_ho:
-        status_text.empty()
-        df_title = pd.DataFrame(title_records)
-        if df_title.empty: return df_title
-        
-        if target_dong:
-            def match_dong_only(row):
-                t_clean = ''.join(filter(str.isalnum, str(target_dong))).upper().replace('동','').replace('제','')
-                d_clean = ''.join(filter(str.isalnum, str(row.get('dongNm','')))).upper().replace('동','').replace('제','')
-                b_clean = ''.join(filter(str.isalnum, str(row.get('bldNm','')))).upper()
-                if t_clean == d_clean or f"{t_clean}동" in b_clean: return True
-                return False
-            df_title = df_title[df_title.apply(match_dong_only, axis=1)]
-            
-        # 영문명칭 한글화 (표제부용)
-        df_title = df_title.rename(columns={'platPlc': '대지위치', 'bldNm': '건물명', 'dongNm': '동명칭', 'mainPurpsCdNm': '주용도', 'platArea': '대지면적(㎡)', 'archArea': '건축면적(㎡)', 'totArea': '연면적(㎡)', 'grndFlrCnt': '지상층수', 'ugrndFlrCnt': '지하층수', 'useAprDay': '사용승인일', 'newPlatPlc': '도로명주소'})
-        return df_title
+    # 동명칭 완벽 매칭 로직 (V15 유지)
+    def match_dong(t_dong, d_val, b_val):
+        if not t_dong: return True
+        t_clean = ''.join(filter(str.isalnum, str(t_dong))).upper().replace('동','').replace('제','')
+        d_clean = ''.join(filter(str.isalnum, str(d_val))).upper().replace('동','').replace('제','')
+        b_clean = ''.join(filter(str.isalnum, str(b_val))).upper().replace(' ','')
+        if t_clean == d_clean or f"{t_clean}동" in b_clean: return True
+        t_nums = re.findall(r'\d+', t_clean)
+        if t_nums:
+            t_num = t_nums[-1]
+            short_num = str(int(t_num) % 100)
+            if d_clean in [f"주{short_num}", str(short_num), f"주{t_num}"]: return True
+        return False
 
-    # 🌟 2단계: '전유부' 무제한 싹쓸이 (빌라든 아파트든 묻지도 따지지도 않고 다 가져옴!)
-    expos_records = []
-    for p_gb in plat_candidates:
-        gb_name = "로트(3)" if p_gb == '3' else ("블록(2)" if p_gb == '2' else "일반(0)")
-        for page in range(1, 51): # 최대 5만건 돌파
-            status_text.info(f"⏳ 지번코드[{gb_name}] 전유부 데이터 수집 중... ({page}페이지)")
-            url = f"http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposInfo?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={p_gb}&bun={bun}&ji={ji}&numOfRows=1000&pageNo={page}"
-            
-            success = False
-            for _ in range(2):
-                try:
-                    res = requests.get(url, timeout=10)
-                    if res.text.strip().startswith('<'):
-                        xml_data = xmltodict.parse(res.content)
-                        if 'OpenAPI_ServiceResponse' not in xml_data:
-                            success = True; break
-                except: time.sleep(0.5)
-            if not success: break
-            
-            body = xml_data.get('response', {}).get('body', {})
-            items = body.get('items', {}).get('item', []) if body.get('items') else []
-            if isinstance(items, dict): items = [items]
-            
-            expos_records.extend(items)
-            
-            if page * 1000 >= int(body.get('totalCount', 0)): break
-
-    status_text.empty()
-    if not expos_records: return pd.DataFrame()
-    df = pd.DataFrame(expos_records)
-
-    # 🌟 [매직 복원] 전유부에 빈칸으로 내려온 동 이름, 건물 이름을 1단계 사전(pk_map)으로 강제 복원!
-    def restore_names(row, key):
-        val = row.get(key)
-        if not val or str(val).strip() in ['None', 'nan', '']:
-            pk = row.get('mgmBldrgstPk')
-            if pk and pk in pk_map:
-                mapped_val = pk_map[pk].get('dong' if key == 'dongNm' else 'bld')
-                if mapped_val: return mapped_val
-        return val
-
-    if 'dongNm' in df.columns or 'mgmBldrgstPk' in df.columns:
-        df['dongNm'] = df.apply(lambda r: restore_names(r, 'dongNm'), axis=1)
-        df['bldNm'] = df.apply(lambda r: restore_names(r, 'bldNm'), axis=1)
-
-    # 🌟 3단계: 초정밀 텍스트 필터링 (빌라, 아파트 모두 완벽 호환)
-    # 호수 매칭
-    def ho_match(row):
-        t_clean = ''.join(filter(str.isalnum, str(target_ho))).upper().replace('호','').replace('제','')
-        h_val = str(row.get('hoNm', ''))
-        h_clean = ''.join(filter(str.isalnum, h_val)).upper().replace('호','').replace('제','')
+    # 호명칭 완벽 매칭 로직 (V15 유지)
+    def match_ho(h_target, h_val):
+        t_clean = ''.join(filter(str.isalnum, str(h_target))).upper().replace('호','').replace('제','')
+        h_clean = ''.join(filter(str.isalnum, str(h_val))).upper().replace('호','').replace('제','')
         if t_clean == h_clean: return True
-        
-        # 12층1201호 대응
         t_nums = re.findall(r'\d+', t_clean)
         h_nums = re.findall(r'\d+', h_clean)
         if t_nums and h_nums and t_nums[-1] == h_nums[-1]: return True
         return False
 
-    df = df[df.apply(ho_match, axis=1)]
+    # 1️⃣ 표제부 탐색 (올바른 지번 코드와 PK 마스터키 획득)
+    title_records = []
+    target_pk = None
+    found_plat_gb = plat_gb_cd
+    pk_map = {}
+    
+    for p_gb in plat_candidates:
+        if target_pk and title_records: break
+        gb_name = "로트(3)" if p_gb == '3' else ("블록(2)" if p_gb == '2' else "일반(0)")
+        items = fetch_molit_api(URL_TITLE, sgg_cd, bjdong_cd, p_gb, bun, ji, status_text, f"[{gb_name}] 표제부", 5)
+        
+        if items:
+            for item in items:
+                tot_area = float(str(item.get('totArea', '0')).replace(',','')) if str(item.get('totArea', '0')).replace(',','').replace('.','').isdigit() else 0.0
+                if tot_area <= 0.0: continue # 유령대장 버림
+                title_records.append(item)
+                
+                pk = item.get('mgmBldrgstPk')
+                d_nm = item.get('dongNm', '')
+                b_nm = item.get('bldNm', '')
+                if pk: pk_map[pk] = {'dong': d_nm, 'bld': b_nm}
+                
+                if target_dong and not target_pk:
+                    if match_dong(target_dong, d_nm, b_nm):
+                        target_pk = pk
+                        found_plat_gb = p_gb
+            if not target_dong and title_records:
+                found_plat_gb = p_gb
+                target_pk = title_records[0].get('mgmBldrgstPk')
 
-    # 동 매칭 (입력했을 때만 작동! 빌라는 무시됨)
-    if target_dong and not df.empty:
-        def dong_match(row):
-            t_str = str(target_dong).upper().replace('동', '').replace('제', '')
-            t_clean = ''.join(filter(str.isalnum, t_str))
-            
-            d_val = str(row.get('dongNm', ''))
-            b_val = str(row.get('bldNm', ''))
-            d_clean = ''.join(filter(str.isalnum, d_val)).upper().replace('동','').replace('제','')
-            
-            if t_clean == d_clean: return True
-            if f"{t_clean}동" in b_val.replace(' ', ''): return True
-            
-            t_nums = re.findall(r'\d+', t_str)
-            if t_nums:
-                t_num = t_nums[-1]
-                d_nums = re.findall(r'\d+', d_val)
-                if t_num in d_nums: return True
-                short_num = str(int(t_num) % 100) 
-                if d_clean in [f"주{short_num}", str(short_num), f"주{t_num}"]: return True
-            return False
-            
-        df = df[df.apply(dong_match, axis=1)]
+    # 2️⃣ 총괄표제부 탐색 (단지 전체 개요) - 클로드 아이디어
+    basis_items = fetch_molit_api(URL_BASIS, sgg_cd, bjdong_cd, found_plat_gb, bun, ji, status_text, "총괄표제부(단지개요)", 2)
+    df_basis = pd.DataFrame(basis_items)
 
-    # 🌟 면적이 0이어도 절대 버리지 않습니다! (서류 있는 그대로 보여줌)
-    mega_rename_dict = {
-        'platPlc': '대지위치', 'newPlatPlc': '도로명주소', 'bldNm': '건물명', 'dongNm': '동명칭', 'hoNm': '호명칭',
-        'mainPurpsCdNm': '주용도', 'etcPurps': '기타용도', 'strctCdNm': '구조', 'area': '면적(㎡)', 
-        'exposPubuseGbCdNm': '전유공용구분', 'flrNoNm': '해당층'
-    }
-    df = df.rename(columns=mega_rename_dict)
-    return df
+    # 3️⃣ 전유부 탐색 (특정 호수 상세)
+    df_expos = pd.DataFrame()
+    is_missing_area = False
+    if target_ho:
+        expos_items = fetch_molit_api(URL_EXPOS, sgg_cd, bjdong_cd, found_plat_gb, bun, ji, status_text, "전유부 싹쓸이", 50)
+        df_expos = pd.DataFrame(expos_items)
+        if not df_expos.empty:
+            # 동/건물명 복원 매직 (V15)
+            def restore(r, k):
+                v = r.get(k)
+                if not v or str(v).strip() in ['None','nan','']:
+                    pk = r.get('mgmBldrgstPk')
+                    if pk and pk in pk_map: return pk_map[pk].get('dong' if k=='dongNm' else 'bld')
+                return v
+            df_expos['dongNm'] = df_expos.apply(lambda r: restore(r, 'dongNm'), axis=1)
+            df_expos['bldNm'] = df_expos.apply(lambda r: restore(r, 'bldNm'), axis=1)
+            
+            if 'area' not in df_expos.columns: 
+                df_expos['area'] = '0'
+                is_missing_area = True
+                
+            df_expos = df_expos[df_expos.apply(lambda r: match_ho(target_ho, r.get('hoNm')), axis=1)]
+            if target_dong and not df_expos.empty:
+                df_expos = df_expos[df_expos.apply(lambda r: match_dong(target_dong, r.get('dongNm'), r.get('bldNm')), axis=1)]
+
+    # 4️⃣ 층별개요 탐색 (해당 동 층별 현황) - 클로드 아이디어
+    floor_items = fetch_molit_api(URL_FLOOR, sgg_cd, bjdong_cd, found_plat_gb, bun, ji, status_text, "층별현황", 5)
+    df_floor = pd.DataFrame(floor_items)
+    if not df_floor.empty and target_pk:
+        df_floor = df_floor[df_floor['mgmBldrgstPk'] == target_pk]
+
+    status_text.empty()
+    return df_basis, pd.DataFrame(title_records), df_expos, df_floor, is_missing_area
+
 
 # ==========================================
 # 🌟 [UI 구성] 웹 화면 (탭 분리)
@@ -369,9 +359,9 @@ def get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong=""
 st.set_page_config(page_title="부동산 올인원 봇", layout="wide")
 st.title("🏢 부동산 올인원 실거래가 & 건축물대장 봇")
 
-tab1, tab2 = st.tabs(["💰 실거래가 조회", "📋 건축물대장 (표제/전유부) 요약 조회"])
+tab1, tab2 = st.tabs(["💰 실거래가 조회", "📋 종합 건축물대장 (단지/동/호수/층별)"])
 
-# ----------------- [탭 1] 실거래가 (기존 내용 유지) -----------------
+# ----------------- [탭 1] 실거래가 (기존 유지) -----------------
 with tab1:
     current_date = pd.Timestamp.now()
     current_month_str = current_date.strftime('%Y%m') 
@@ -405,154 +395,130 @@ with tab1:
                     excel_buffer = BytesIO()
                     with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
                         real_data_df.to_excel(writer, index=True, index_label='순번', sheet_name='실거래가')
-                    st.download_button("📥 엑셀 파일로 다운로드", data=excel_buffer.getvalue(), file_name=f"{sigungu_name}_{display_dong}_{property_type}_{transaction_type}.xlsx")
+                    st.download_button("📥 엑셀 파일로 다운로드", data=excel_buffer.getvalue(), file_name=f"실거래가.xlsx")
             else:
-                st.error("지역을 찾을 수 없습니다. 오타가 없는지 확인해주세요.")
+                st.error("지역을 찾을 수 없습니다.")
 
-# ----------------- [탭 2] 건축물대장 (한계 명시 & 스마트 안내 폼) -----------------
+# ----------------- [탭 2] 건축물대장 (클로드 융합 대시보드 UI) -----------------
 with tab2:
-    st.subheader("📋 특정 지번 건축물대장 (표제/전유부) 요약")
-    st.info("💡 대단지 아파트는 **'동'**과 **'호수'**를 함께 입력하시고, 동이 없는 빌라/단독주택은 동 칸을 비워두세요.")
+    st.subheader("📋 특정 지번 건축물대장 종합 조회")
+    st.info("💡 단지 정보, 해당 층별 정보, 전유부 면적을 한 번의 검색으로 모두 분석합니다.")
     
     with st.form("bldrgst_form"):
         col1, col2, col3 = st.columns([2, 1, 1])
         with col1:
-            address_input = st.text_input("조회할 텍스트 주소 (필수)", placeholder="예: 상도동 360-4 또는 서계동 245-11")
+            address_input = st.text_input("조회할 텍스트 주소 (필수)", placeholder="예: 상도동 450 또는 서계동 245-11")
         with col2:
             dong_input = st.text_input("동 (선택)", placeholder="예: 105")
         with col3:
-            ho_input = st.text_input("호수 (선택)", placeholder="예: 202")
+            ho_input = st.text_input("호수 (선택)", placeholder="예: 201")
             
-        bld_submitted = st.form_submit_button("🔍 건축물대장 요약 문서 열람")
+        bld_submitted = st.form_submit_button("🔍 종합 대장 데이터 열람")
         
     if bld_submitted and address_input:
         region_search_term, plat_gb_cd, bun, ji = parse_address_for_bldrgst(address_input)
-        
         if not region_search_term:
             st.warning("주소를 올바르게 입력해주세요.")
         else:
             sgg_cd, bjdong_cd, full_loc_name = get_full_bjdong_code(region_search_term)
-            
             if sgg_cd and bjdong_cd:
                 st.success(f"✅ 주소 파싱 성공: {full_loc_name} (본번:{bun} 부번:{ji})")
-                bld_df = get_building_register(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, dong_input, ho_input)
                 
-                if not bld_df.empty:
+                # 🌟 융합 엔진 호출! (4가지 데이터 한방에 수거)
+                df_basis, df_title, df_expos, df_floor, is_missing_area = get_comprehensive_ledger(
+                    sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, dong_input, ho_input
+                )
+                
+                if df_title.empty and df_expos.empty:
+                    st.warning(f"🚨 조회 결과가 없습니다. 지번이나 동/호수를 다시 한번 확인해주세요.")
+                else:
                     st.markdown("<br>", unsafe_allow_html=True)
-                    
-                    def get_clean_val(row, key, default='-'):
-                        val = row.get(key, default)
-                        if pd.isna(val) or str(val).strip() in ['None', '', 'nan']: return default
-                        return str(val).strip()
+                    def safe_val(val, default='-'):
+                        return default if pd.isna(val) or str(val).strip() in ['None', '', 'nan'] else str(val).strip()
 
-                    # 🌟 전유부 (호수 입력 시)
-                    if ho_input:
-                        unique_pks = bld_df['mgmBldrgstPk'].unique() if 'mgmBldrgstPk' in bld_df.columns else [None]
-                        shown_count = 0
+                    # 🟩 [섹션 1] 총괄표제부 (단지/건물 전체 개요) - 클로드 아이디어!
+                    if not df_basis.empty:
+                        row_b = df_basis.iloc[0]
+                        st.markdown(f"### 🏢 [총괄표제부] 단지 전체 개요")
+                        st.markdown(f"#### 📍 {safe_val(row_b.get('bldNm'), '명칭 없음')}")
+                        st.markdown(f"""
+                        | 구분 | 상세 내용 | 구분 | 상세 내용 |
+                        |:---:|---|:---:|---|
+                        | **대지면적** | {safe_val(row_b.get('platArea'))} ㎡ | **주용도** | {safe_val(row_b.get('mainPurpsCdNm'))} |
+                        | **연면적(총)** | {safe_val(row_b.get('totArea'))} ㎡ | **총 세대/가구** | {safe_val(row_b.get('hhldCnt'),'0')}세대 / {safe_val(row_b.get('fmlyCnt'),'0')}가구 |
+                        | **건폐율/용적률** | {safe_val(row_b.get('bcRat'))}% / {safe_val(row_b.get('vlRat'))}% | **총 주차대수** | {safe_val(row_b.get('totPkngCnt'),'0')} 대 |
+                        """, unsafe_allow_html=True)
+                        st.divider()
+
+                    # 🟩 [섹션 2] 표제부 또는 전유부 상세 정보
+                    if ho_input and not df_expos.empty:
+                        # 전유부 출력 (기존 V15 강력 엔진)
+                        st.markdown(f"### 🏠 [전유부] 해당 호수 상세")
+                        unique_pks = df_expos['mgmBldrgstPk'].unique() if 'mgmBldrgstPk' in df_expos.columns else [None]
                         
-                        for pk in unique_pks:
-                            group_df = bld_df[bld_df['mgmBldrgstPk'] == pk] if pk else bld_df
+                        for pk in unique_pks[:3]: # 최대 3개까지만 출력
+                            grp = df_expos[df_expos['mgmBldrgstPk'] == pk] if pk else df_expos
+                            is_j = grp['exposPubuseGbCdNm'].astype(str).str.contains('전유', na=False)
+                            is_g = grp['exposPubuseGbCdNm'].astype(str).str.contains('공용', na=False)
                             
-                            if '전유공용구분' in group_df.columns:
-                                is_jeonyu = group_df['전유공용구분'].astype(str).str.contains('전유', na=False)
-                                is_gongyong = group_df['전유공용구분'].astype(str).str.contains('공용', na=False)
-                                전용_df = group_df[is_jeonyu]
-                                공용_df = group_df[is_gongyong]
-                                if 전용_df.empty: 전용_df = group_df
-                            else:
-                                전용_df = group_df
-                                공용_df = pd.DataFrame()
+                            df_j = grp[is_j]
+                            df_g = grp[is_g]
+                            if df_j.empty: df_j = grp
                             
-                            def safe_float(val):
-                                try: return float(str(val).replace(',', '').strip())
+                            def s_float(v):
+                                try: return float(str(v).replace(',', '').strip())
                                 except: return 0.0
-                            
-                            area_col = '면적(㎡)' if '면적(㎡)' in group_df.columns else None
-                            
-                            if area_col:
-                                전용면적 = sum(safe_float(x) for x in 전용_df[area_col]) if not 전용_df.empty else 0.0
-                                공용면적 = sum(safe_float(x) for x in 공용_df[area_col]) if not 공용_df.empty else 0.0
-                            else:
-                                전용면적, 공용면적 = 0.0, 0.0
                                 
-                            계약면적 = 전용면적 + 공용면적
+                            j_area = sum(s_float(x) for x in df_j['area']) if not is_missing_area else 0.0
+                            g_area = sum(s_float(x) for x in df_g['area']) if not is_missing_area else 0.0
+                            t_area = j_area + g_area
                             
-                            if shown_count >= 5:
-                                st.info("💡 여러 세대가 조회되어 상위 5개만 보여드립니다. (아래 원본 표 참조)")
-                                break
-                            shown_count += 1
+                            m_row = df_j.iloc[0]
+                            full_nm = " ".join([x for x in [safe_val(m_row.get('bldNm'),''), safe_val(m_row.get('dongNm'),''), safe_val(m_row.get('hoNm'),'')] if x])
                             
                             with st.container(border=True):
-                                main_row = 전용_df.iloc[0] if not 전용_df.empty else group_df.iloc[0]
-                                addr = get_clean_val(main_row, '도로명주소', get_clean_val(main_row, '대지위치', '-'))
+                                st.markdown(f"#### 🚪 명칭: {full_nm}")
+                                st.warning("🔒 **[데이터 한계 안내]** 실시간 오픈 API 특성상 소유자명은 제공되지 않으며, 일부 구축 빌라의 경우 전산망 오류로 면적이 누락될 수 있습니다.")
                                 
-                                b_nm = get_clean_val(main_row, '건물명', '')
-                                clean_d_input = ''.join(filter(str.isalnum, str(dong_input))) if dong_input else ''
-                                d_nm = get_clean_val(main_row, '동명칭', '')
-                                
-                                if clean_d_input and clean_d_input not in ['0', '없음'] and d_nm == '':
-                                    if f"{clean_d_input}동" not in b_nm:
-                                        d_nm = f"{clean_d_input}동"
-                                
-                                clean_h_input = ''.join(filter(str.isalnum, str(ho_input))).replace('호', '')
-                                h_nm = get_clean_val(main_row, '호명칭', f'{clean_h_input}호')
-                                full_name = " ".join([x for x in [b_nm, d_nm, h_nm] if x])
-                                
-                                st.markdown(f"### 📄 집합건축물대장 [전유부] 요약")
-                                st.markdown(f"#### 📍 주소: {addr}")
-                                st.markdown(f"#### 🏢 명칭: {full_name}")
-                                
-                                # 🌟 소유자 정보 누락에 대한 명확한 법적 안내 (브리핑 시 고객에게 설명하기 좋게 구성)
-                                st.error("🔒 **[소유자 정보 비공개]** 개인정보보호법에 의거, 국토교통부 오픈 API에서는 소유자 성명 및 주민등록번호를 제공하지 않습니다. 해당 정보는 정부24 민원 발급을 통해 확인하셔야 합니다.")
-                                st.divider()
-                                
-                                # 🌟 면적이 0일 경우, 0.00㎡ 대신 국토부 API 누락임을 강렬하게 표시!
-                                jeon_area_str = f"<span style='color:#0066cc; font-weight:bold; font-size:1.1em;'>{전용면적:,.2f} ㎡</span>" if 전용면적 > 0 else "<span style='color:red;'>⚠️ 국토부 API 데이터 누락 (원본발급 요망)</span>"
-                                gong_area_str = f"{공용면적:,.2f} ㎡" if 공용면적 > 0 else "<span style='color:red;'>⚠️ 누락</span>"
-                                total_area_str = f"<span style='color:#d93025; font-weight:bold; font-size:1.1em;'>{계약면적:,.2f} ㎡</span>" if 계약면적 > 0 else "<span style='color:red;'>⚠️ 확인 불가</span>"
+                                j_str = "<span style='color:red; font-size:0.9em;'>⚠️ API 전산 누락</span>" if is_missing_area else f"<span style='color:#0066cc; font-weight:bold; font-size:1.1em;'>{j_area:,.2f} ㎡</span>"
+                                g_str = "<span style='color:red; font-size:0.9em;'>⚠️ 누락</span>" if is_missing_area else f"{g_area:,.2f} ㎡"
+                                t_str = "<span style='color:#d93025; font-weight:bold;'>확인 불가</span>" if is_missing_area else f"<span style='color:#d93025; font-weight:bold; font-size:1.1em;'>{t_area:,.2f} ㎡</span>"
 
                                 st.markdown(f"""
                                 | 구분 | 상세 내용 | 구분 | 상세 내용 |
                                 |:---:|---|:---:|---|
-                                | **주용도** | {get_clean_val(main_row, '주용도')} | **해당 층** | {get_clean_val(main_row, '해당층')} |
-                                | **전용면적** | {jeon_area_str} | **기타용도** | {get_clean_val(main_row, '기타용도')} |
-                                | **공용면적** | {gong_area_str} | **구조** | {get_clean_val(main_row, '구조')} |
-                                | **계약면적(총)**| {total_area_str} | **대지권지분** | 등기부등본 확인 요망 |
+                                | **주용도** | {safe_val(m_row.get('mainPurpsCdNm'))} | **해당 층** | {safe_val(m_row.get('flrNoNm'))} |
+                                | **전용면적** | {j_str} | **기타용도** | {safe_val(m_row.get('etcPurps'))} |
+                                | **공용면적** | {g_str} | **구조** | {safe_val(m_row.get('strctCdNm'))} |
+                                | **계약면적(총)**| {t_str} | **대지권지분** | 등기부등본 확인 요망 |
                                 """, unsafe_allow_html=True)
-                                
-                        with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기"):
-                            st.info("아래 표는 파이썬이 국토부 서버에서 받아온 날것의 원본 데이터입니다. 면적 칸에 빨간색 경고가 떴다면, 아래 원본 표에도 면적(area) 항목이 아예 비어있기 때문입니다. (주로 2010년 이전 구축 빌라에서 나타나는 국토부 시스템 한계입니다.)")
-                            st.dataframe(bld_df.drop(columns=['mgmBldrgstPk', 'sigunguCd', 'bjdongCd', 'platGbCd', 'bun', 'ji', 'regstrGbCd', 'regstrKindCd'], errors='ignore'))
+                        st.divider()
 
-                    # 🌟 표제부 (호수 미입력 시)
-                    else:
+                    elif not ho_input and not df_title.empty:
+                        # 표제부 출력 (호수가 없을 때)
+                        m_row = df_title.iloc[0]
+                        d_nm = f" {safe_val(m_row.get('dongNm'))}" if safe_val(m_row.get('dongNm')) != '-' else ""
+                        full_nm = f"{safe_val(m_row.get('bldNm'), '')}{d_nm}"
+                        
+                        st.markdown(f"### 📄 [표제부] 해당 동/건물 상세")
                         with st.container(border=True):
-                            main_row = bld_df.iloc[0]
-                            addr = get_clean_val(main_row, '도로명주소', get_clean_val(main_row, '대지위치', '-'))
-                            bld_name = get_clean_val(main_row, '건물명', '')
-                            dong_title = f" {get_clean_val(main_row, '동명칭', '')}" if dong_input else ""
-                            
-                            use_day = get_clean_val(main_row, '사용승인일', '-')
-                            if len(use_day)==8 and use_day.isdigit(): use_day = f"{use_day[:4]}년 {use_day[4:6]}월 {use_day[6:8]}일"
-                            
-                            st.markdown(f"### 📄 일반건축물대장 [표제부] 요약")
-                            st.markdown(f"#### 📍 주소: {addr}")
-                            if bld_name or dong_title: st.markdown(f"#### 🏢 명칭: {bld_name}{dong_title}")
-                            
-                            st.error("🔒 **[소유자 정보 비공개]** 개인정보보호법에 의거, 국토교통부 오픈 API에서는 소유자 성명 및 주민등록번호를 제공하지 않습니다.")
-                            st.divider()
-                            
+                            if full_nm.strip(): st.markdown(f"#### 🏢 명칭: {full_nm}")
                             st.markdown(f"""
                             | 구분 | 상세 내용 | 구분 | 상세 내용 |
                             |:---:|---|:---:|---|
-                            | **주용도** | {get_clean_val(main_row, '주용도')} | **규모** | 지하 {get_clean_val(main_row, '지하층수', '0')}층 / 지상 {get_clean_val(main_row, '지상층수', '0')}층 |
-                            | **대지면적** | {get_clean_val(main_row, '대지면적(㎡)')} ㎡ | **구조** | {get_clean_val(main_row, '구조')} |
-                            | **연면적** | {get_clean_val(main_row, '연면적(㎡)')} ㎡ | **사용승인일** | {use_day} |
+                            | **주용도** | {safe_val(m_row.get('mainPurpsCdNm'))} | **규모** | 지하 {safe_val(m_row.get('ugrndFlrCnt'),'0')}층 / 지상 {safe_val(m_row.get('grndFlrCnt'),'0')}층 |
+                            | **대지면적** | {safe_val(m_row.get('platArea'))} ㎡ | **구조** | {safe_val(m_row.get('strctCdNm'))} |
+                            | **연면적** | {safe_val(m_row.get('totArea'))} ㎡ | **승강기** | 승용 {safe_val(m_row.get('rideUseElvtCnt'),'0')} / 비상 {safe_val(m_row.get('emgenUseElvtCnt'),'0')} |
                             """, unsafe_allow_html=True)
-                            
-                        with st.expander("🛠️ (클릭) 국토부 원본 데이터 엑스레이 확인하기"):
-                            st.dataframe(bld_df.drop(columns=['mgmBldrgstPk', 'sigunguCd', 'bjdongCd', 'platGbCd', 'bun', 'ji', 'regstrGbCd', 'regstrKindCd'], errors='ignore'))
-                else:
-                    st.warning(f"🚨 조회 결과가 없습니다. 지번이나 동/호수를 다시 한번 확인해주세요.")
+                        st.divider()
+
+                    # 🟩 [섹션 3] 층별 현황 (클로드 아이디어!)
+                    if not df_floor.empty:
+                        st.markdown(f"### 🪜 [층별개요] 해당 동 층별 구조/면적 현황")
+                        df_f_clean = df_floor[['flrNoNm', 'strctCdNm', 'mainPurpsCdNm', 'area']].rename(
+                            columns={'flrNoNm':'해당 층', 'strctCdNm':'구조', 'mainPurpsCdNm':'주용도', 'area':'면적(㎡)'}
+                        )
+                        st.dataframe(df_f_clean, use_container_width=True)
+
             else:
                 st.error("해당하는 지역을 찾을 수 없습니다.")
