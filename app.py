@@ -246,28 +246,18 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
         if valid:
             df_recap = pd.DataFrame(valid); break
 
-    # ─────────────────────────────────────────────────────
-    # STEP 3: 전유공용면적
-    #
-    # ① hoNm 클라이언트 필터 (필수)
-    # ② 동 클라이언트 필터 (3단계 우선순위):
-    #    1순위: mgmBldrgstPk 일치
-    #    2순위: dongNm/bldNm 일치
-    #    3순위: 명백히 다른 동(is_different_dong=True)만 제거
-    #           → dongNm 빈값은 판단불가이므로 허용
-    #    exact_jibun이면 동 필터 전체 스킵
-    # ─────────────────────────────────────────────────────
+        # STEP 3: 전유공용면적
     status.info("🏠 전유공용면적 수집 중...")
     df_expos        = pd.DataFrame()
     is_missing_area = False
 
     if target_ho:
         found        = False
+        # platPlc 파싱 지번 우선, 나머지 부속지번 fallback
         search_jibun = target_exact_jibun + [j for j in all_jibun if j not in target_exact_jibun]
 
         for (js, jb, jp, jbun, jji) in search_jibun:
             if found: break
-            is_exact_jibun = (js, jb, jp, jbun, jji) in target_exact_jibun
 
             for p_gb in ([jp] + [x for x in plat_cands if x != jp]):
                 items = fetch_expos_all(js, jb, p_gb, jbun, jji, max_pages=20)
@@ -281,10 +271,12 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 tmp = tmp[tmp.apply(lambda r: match_ho(target_ho, r.get("hoNm","")), axis=1)]
                 if tmp.empty: continue
 
-                # ② 동 필터 (exact_jibun이면 스킵)
-                if target_dong and not is_exact_jibun:
+                # ② 동 필터 — is_exact_jibun 예외 없이 항상 적용
+                if target_dong:
+                    # 1순위: mgmBldrgstPk 일치
                     m_pk = tmp[tmp["mgmBldrgstPk"].isin(target_pks)] \
                            if ("mgmBldrgstPk" in tmp.columns and target_pks) else pd.DataFrame()
+                    # 2순위: dongNm/bldNm 일치
                     m_name = tmp[tmp.apply(
                         lambda r: match_dong(target_dong, r.get("dongNm",""), r.get("bldNm","")), axis=1
                     )]
@@ -293,7 +285,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                     elif not m_name.empty:
                         tmp = m_name
                     else:
-                        # 명백히 다른 동만 제거, dongNm 빈값(판단불가)은 허용
+                        # 3순위: 명백히 다른 동만 제거, dongNm 빈값(판단불가)은 허용
                         tmp = tmp[~tmp.apply(
                             lambda r: is_different_dong(target_dong, r.get("dongNm",""), r.get("bldNm","")), axis=1
                         )]
@@ -304,6 +296,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                     df_expos["area"] = "0"; is_missing_area = True
                 found = True; break
             if found: break
+
 
     # STEP 4: 층별개요
     status.info("🪜 층별개요 수집 중...")
