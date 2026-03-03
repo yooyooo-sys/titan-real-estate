@@ -167,7 +167,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수 (V17 다중 PK 싹쓸이 & 유령대장 완벽 회피!)
+# 🌟 [기능 2] 건축물대장 처리 함수 (V18 크로스-볼트 독립 탐색 엔진!)
 # ==========================================
 import re 
 import pandas as pd
@@ -218,7 +218,7 @@ def get_full_bjdong_code(search_term):
         return None, None, None
     except: return None, None, None
 
-def fetch_molit_api(base_url, sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, status_text, desc_prefix, max_pages=50):
+def fetch_molit_api(base_url, sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, status_text, desc_prefix, max_pages=30):
     all_items = []
     for page in range(1, max_pages + 1):
         url = f"{base_url}?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={plat_gb_cd}&bun={bun}&ji={ji}&numOfRows=1000&pageNo={page}"
@@ -248,7 +248,8 @@ def fetch_molit_api(base_url, sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, status_tex
     return all_items
 
 def get_comprehensive_ledger(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong="", target_ho=""):
-    plat_candidates = ['0', '2', '3'] if plat_gb_cd != '1' else ['1']
+    # 🌟 대단지의 핵심은 3(로트)과 2(블록)에 있습니다. 탐색 순서를 3->2->0으로 고정!
+    plat_candidates = ['3', '2', '0'] if plat_gb_cd != '1' else ['1']
     status_text = st.empty()
     
     URL_BASIS = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrBasisOulnInfo" 
@@ -285,63 +286,53 @@ def get_comprehensive_ledger(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong
         if t_nums and h_nums and t_nums[-1] == h_nums[-1]: return True
         return False
 
-    # 1️⃣ 표제부 탐색 (다중 PK 완벽 수집 & 빈 껍데기 무시!)
+    # 1️⃣ 표제부 탐색 (다중 PK 맵핑 생성)
     target_pks = set()
-    found_plat_gb = plat_gb_cd
     title_records = []
     pk_map = {}
     
     for p_gb in plat_candidates:
-        if target_pks: break # 해당 동의 PK들을 찾았다면 다른 지번코드는 스킵
-        gb_name = "로트(3)" if p_gb == '3' else ("블록(2)" if p_gb == '2' else "일반(0)")
-        items = fetch_molit_api(URL_TITLE, sgg_cd, bjdong_cd, p_gb, bun, ji, status_text, f"[{gb_name}] 표제부", 5)
+        items = fetch_molit_api(URL_TITLE, sgg_cd, bjdong_cd, p_gb, bun, ji, status_text, f"[지번코드 {p_gb}] 표제부 스캔", 5)
+        if not items: continue
         
-        if items:
-            valid_items = []
-            for item in items:
-                tot = str(item.get('totArea', '0')).replace(',', '')
-                try: tot_f = float(tot)
-                except: tot_f = 0.0
-                if tot_f <= 0.0: continue # 🌟 면적이 없는 유령 대장은 아예 취급 안 함!
-                
-                valid_items.append(item)
-                pk = item.get('mgmBldrgstPk')
-                d_nm = item.get('dongNm', '')
-                b_nm = item.get('bldNm', '')
-                if pk: pk_map[pk] = {'dong': d_nm, 'bld': b_nm}
-                
-                if target_dong and match_dong(target_dong, d_nm, b_nm):
-                    target_pks.add(pk) # 🌟 핵심: 105동에 해당하는 모든 고유키를 싹 쓸어담음!
-                    
-            if target_pks:
-                found_plat_gb = p_gb
-                title_records = [i for i in valid_items if i.get('mgmBldrgstPk') in target_pks]
-            elif not target_dong and valid_items:
-                found_plat_gb = p_gb
-                title_records = valid_items
-                break
-
-    # 2️⃣ 총괄표제부 탐색 (면적 0인 껍데기 거르고 꽉 찬 데이터만!)
-    df_basis = pd.DataFrame()
-    for p_gb in ['0', '2', '3', '1']: # 총괄표제부는 보통 0에 있으므로 0부터 탐색
-        basis_items = fetch_molit_api(URL_BASIS, sgg_cd, bjdong_cd, p_gb, bun, ji, status_text, "총괄표제부(단지개요)", 2)
-        valid_basis = []
-        for b in basis_items:
-            tot = str(b.get('totArea', '0')).replace(',', '')
+        for item in items:
+            tot = str(item.get('totArea', '0')).replace(',', '')
             try: tot_f = float(tot)
             except: tot_f = 0.0
-            if tot_f > 0.0: valid_basis.append(b) # 🌟 텅 빈 총괄표제부 화면 방지!
+            if tot_f <= 0.0: continue 
+            
+            title_records.append(item)
+            pk = item.get('mgmBldrgstPk')
+            d_nm = item.get('dongNm', '')
+            b_nm = item.get('bldNm', '')
+            if pk: pk_map[pk] = {'dong': d_nm, 'bld': b_nm}
+            
+            if target_dong and match_dong(target_dong, d_nm, b_nm):
+                target_pks.add(pk)
+        
+        # 표제부에서 해당 동을 찾았으면 다음 지번코드는 표제부 스킵
+        if target_pks: break 
+
+    # 2️⃣ 총괄표제부 탐색 (0, 2, 3 독립적으로 찌르기!)
+    df_basis = pd.DataFrame()
+    for p_gb in ['0', '2', '3', '1']: 
+        basis_items = fetch_molit_api(URL_BASIS, sgg_cd, bjdong_cd, p_gb, bun, ji, status_text, f"[지번코드 {p_gb}] 단지개요 탐색", 2)
+        valid_basis = [b for b in basis_items if float(str(b.get('totArea', '0')).replace(',', '') or 0) > 0.0]
         if valid_basis:
             df_basis = pd.DataFrame(valid_basis)
-            break
+            break # 꽉 찬 데이터를 찾으면 스톱!
 
-    # 3️⃣ 전유부 탐색 (특정 호수 상세)
+    # 3️⃣ 전유부 탐색 🌟대표님이 지적하신 '추가 액션' 구간!!🌟
+    # 표제부가 어디서 나왔든 상관없이, 전유부는 3, 2, 0 모든 금고를 독립적으로 까서 호수를 기어코 찾아냅니다.
     df_expos = pd.DataFrame()
     is_missing_area = False
+    
     if target_ho:
-        expos_items = fetch_molit_api(URL_EXPOS, sgg_cd, bjdong_cd, found_plat_gb, bun, ji, status_text, "전유부 싹쓸이", 50)
-        if expos_items:
-            df_expos = pd.DataFrame(expos_items)
+        for p_gb in plat_candidates:
+            expos_items = fetch_molit_api(URL_EXPOS, sgg_cd, bjdong_cd, p_gb, bun, ji, status_text, f"[지번코드 {p_gb}] 전유부(호수) 정밀 추적", 30)
+            if not expos_items: continue
+            
+            temp_df = pd.DataFrame(expos_items)
             
             def restore(r, k):
                 v = r.get(k)
@@ -350,35 +341,45 @@ def get_comprehensive_ledger(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong
                     if pk and pk in pk_map: return pk_map[pk].get('dong' if k=='dongNm' else 'bld')
                 return v
                 
-            df_expos['dongNm'] = df_expos.apply(lambda r: restore(r, 'dongNm'), axis=1)
-            df_expos['bldNm'] = df_expos.apply(lambda r: restore(r, 'bldNm'), axis=1)
+            temp_df['dongNm'] = temp_df.apply(lambda r: restore(r, 'dongNm'), axis=1)
+            temp_df['bldNm'] = temp_df.apply(lambda r: restore(r, 'bldNm'), axis=1)
             
-            if 'area' not in df_expos.columns: 
-                df_expos['area'] = '0'
-                is_missing_area = True
-                
-            df_expos = df_expos[df_expos.apply(lambda r: match_ho(target_ho, r.get('hoNm')), axis=1)]
+            # 호수 일치하는 것 필터링
+            matched_ho = temp_df[temp_df.apply(lambda r: match_ho(target_ho, r.get('hoNm')), axis=1)]
             
-            if target_dong and not df_expos.empty:
-                # 찾은 PK 묶음 안에 있거나, 동 이름이 매칭되면 통과!
-                df_expos = df_expos[df_expos.apply(lambda r: r.get('mgmBldrgstPk') in target_pks or match_dong(target_dong, r.get('dongNm'), r.get('bldNm')), axis=1)]
+            # 동 일치하는 것 필터링 (PK가 일치하거나 동이름이 일치하면 통과)
+            if target_dong and not matched_ho.empty:
+                matched_ho = matched_ho[matched_ho.apply(lambda r: r.get('mgmBldrgstPk') in target_pks or match_dong(target_dong, r.get('dongNm'), r.get('bldNm')), axis=1)]
+            
+            # 🌟 찾았다면! 루프 종료
+            if not matched_ho.empty:
+                df_expos = matched_ho
+                if 'area' not in df_expos.columns: 
+                    df_expos['area'] = '0'
+                    is_missing_area = True
+                break
 
-    # 4️⃣ 층별개요 탐색 (해당 동의 모든 층 싹쓸이)
+    # 4️⃣ 층별개요 탐색 🌟(이것도 독립적으로 찾을 때까지 찌름)🌟
     df_floor = pd.DataFrame()
     if target_dong:
-        floor_items = fetch_molit_api(URL_FLOOR, sgg_cd, bjdong_cd, found_plat_gb, bun, ji, status_text, "층별현황", 10)
-        if floor_items:
-            df_floor = pd.DataFrame(floor_items)
+        for p_gb in plat_candidates:
+            floor_items = fetch_molit_api(URL_FLOOR, sgg_cd, bjdong_cd, p_gb, bun, ji, status_text, f"[지번코드 {p_gb}] 층별현황 추적", 10)
+            if not floor_items: continue
+            
+            temp_floor = pd.DataFrame(floor_items)
             if target_pks:
-                df_floor = df_floor[df_floor['mgmBldrgstPk'].isin(target_pks)] # 🌟 1개 층만 나오던 오류 해결!
+                temp_floor = temp_floor[temp_floor['mgmBldrgstPk'].isin(target_pks)]
             else:
-                df_floor['dongNm'] = df_floor.apply(lambda r: restore(r, 'dongNm'), axis=1)
-                df_floor['bldNm'] = df_floor.apply(lambda r: restore(r, 'bldNm'), axis=1)
-                df_floor = df_floor[df_floor.apply(lambda r: match_dong(target_dong, r.get('dongNm'), r.get('bldNm')), axis=1)]
+                temp_floor['dongNm'] = temp_floor.apply(lambda r: restore(r, 'dongNm'), axis=1)
+                temp_floor['bldNm'] = temp_floor.apply(lambda r: restore(r, 'bldNm'), axis=1)
+                temp_floor = temp_floor[temp_floor.apply(lambda r: match_dong(target_dong, r.get('dongNm'), r.get('bldNm')), axis=1)]
+                
+            if not temp_floor.empty:
+                df_floor = temp_floor
+                break # 찾았으면 스톱!
 
     status_text.empty()
     return df_basis, pd.DataFrame(title_records), df_expos, df_floor, is_missing_area
-
 
 # ==========================================
 # 🌟 [UI 구성] 웹 화면 (탭 분리)
@@ -412,17 +413,15 @@ with tab1:
         else:
             sigungu_code, full_region_name = get_sigungu_code(sigungu_name, dong_name)
             if sigungu_code:
-                display_dong = dong_name.strip() if dong_name.strip() else "전체"
                 st.success(f"✅ 지역 변환 성공: {full_region_name} ({sigungu_code})")
                 real_data_df = get_real_estate_data(sigungu_code, start_month, end_month, dong_name, property_type, transaction_type)
                 if not real_data_df.empty:
                     real_data_df.index = range(1, len(real_data_df) + 1)
-                    st.subheader(f"📊 {sigungu_name} {display_dong} {property_type} {transaction_type} ({start_month}~{end_month}) - 총 {len(real_data_df)}건")
                     st.dataframe(real_data_df, use_container_width=True)
                     excel_buffer = BytesIO()
                     with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
                         real_data_df.to_excel(writer, index=True, index_label='순번', sheet_name='실거래가')
-                    st.download_button("📥 엑셀 파일로 다운로드", data=excel_buffer.getvalue(), file_name=f"{sigungu_name}_{display_dong}_{property_type}_{transaction_type}.xlsx")
+                    st.download_button("📥 엑셀 파일로 다운로드", data=excel_buffer.getvalue(), file_name=f"실거래가.xlsx")
             else:
                 st.error("지역을 찾을 수 없습니다.")
 
@@ -434,11 +433,11 @@ with tab2:
     with st.form("bldrgst_form"):
         col1, col2, col3 = st.columns([2, 1, 1])
         with col1:
-            address_input = st.text_input("조회할 텍스트 주소 (필수)", placeholder="예: 상도동 450 또는 서계동 245-11")
+            address_input = st.text_input("조회할 텍스트 주소 (필수)", placeholder="예: 상도동 450")
         with col2:
-            dong_input = st.text_input("동 (선택)", placeholder="예: 105")
+            dong_input = st.text_input("동 (선택)", placeholder="예: 103")
         with col3:
-            ho_input = st.text_input("호수 (선택)", placeholder="예: 302")
+            ho_input = st.text_input("호수 (선택)", placeholder="예: 501")
             
         bld_submitted = st.form_submit_button("🔍 종합 대장 데이터 열람")
         
@@ -503,7 +502,7 @@ with tab2:
                             
                             with st.container(border=True):
                                 st.markdown(f"#### 🚪 명칭: {full_nm}")
-                                st.warning("🔒 **[데이터 한계 안내]** 실시간 오픈 API 특성상 소유자명은 제공되지 않으며, 일부 구축 빌라의 경우 전산망 오류로 면적이 누락될 수 있습니다.")
+                                st.warning("🔒 **[데이터 한계 안내]** 실시간 오픈 API 특성상 소유자명은 제공되지 않으며, 일부 구축 건물의 경우 전산망 오류로 면적이 누락될 수 있습니다.")
                                 
                                 j_str = "<span style='color:red; font-size:0.9em;'>⚠️ API 전산 누락</span>" if is_missing_area else f"<span style='color:#0066cc; font-weight:bold; font-size:1.1em;'>{j_area:,.2f} ㎡</span>"
                                 g_str = "<span style='color:red; font-size:0.9em;'>⚠️ 누락</span>" if is_missing_area else f"{g_area:,.2f} ㎡"
