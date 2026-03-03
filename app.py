@@ -1,5 +1,5 @@
 # ============================================================
-# 부동산 올인원 봇 — 실거래가 + 건축물대장 (최종 완성본)
+# 부동산 올인원 봇 — 실거래가 + 건축물대장 최종 완성본
 # ============================================================
 import streamlit as st
 import pandas as pd
@@ -34,17 +34,17 @@ API_PATHS = {
 }
 
 # ─────────────────────────────────────────────────────────────
-# 3. 건축물대장 API URL 상수
+# 3. 건축물대장 API URL
 # ─────────────────────────────────────────────────────────────
-_BLD_BASE  = "http://apis.data.go.kr/1613000/BldRgstHubService"
-URL_RECAP  = f"{_BLD_BASE}/getBrRecapTitleInfo"       # 총괄표제부
-URL_TITLE  = f"{_BLD_BASE}/getBrTitleInfo"            # 표제부
-URL_EXPOS  = f"{_BLD_BASE}/getBrExposPubuseAreaInfo"  # 전유공용면적
-URL_FLOOR  = f"{_BLD_BASE}/getBrFlrOulnInfo"          # 층별개요
-URL_ATCH   = f"{_BLD_BASE}/getBrAtchJibunInfo"        # 부속지번 (외필지)
+_BASE     = "http://apis.data.go.kr/1613000/BldRgstHubService"
+URL_RECAP = f"{_BASE}/getBrRecapTitleInfo"        # 총괄표제부
+URL_TITLE = f"{_BASE}/getBrTitleInfo"             # 표제부
+URL_EXPOS = f"{_BASE}/getBrExposPubuseAreaInfo"   # 전유공용면적 (올바른 URL)
+URL_FLOOR = f"{_BASE}/getBrFlrOulnInfo"           # 층별개요
+URL_ATCH  = f"{_BASE}/getBrAtchJibunInfo"         # 부속지번 (외필지)
 
 # ─────────────────────────────────────────────────────────────
-# 4. 공통 헬퍼 함수
+# 4. 공통 헬퍼
 # ─────────────────────────────────────────────────────────────
 def safe_val(val, default="-"):
     if val is None: return default
@@ -53,14 +53,14 @@ def safe_val(val, default="-"):
 
 def fmt_date(d):
     s = safe_val(d)
-    return f"{s[:4]}.{s[4:6]}.{s[6:]}" if len(s) == 8 and s.isdigit() else s
+    return f"{s[:4]}.{s[4:6]}.{s[6:]}" if (len(s) == 8 and s.isdigit()) else s
 
-def _to_float(v):
+def to_float(v):
     try: return float(str(v).replace(",", "").strip())
     except: return 0.0
 
 def parse_address(addr):
-    """'상도동 450-3' → (region_term, plat_gb, bun, ji)"""
+    """'상도동 450-3' → (검색어, plat_gb, bun, ji)"""
     parts = addr.strip().split()
     if not parts: return None, None, None, None
     plat_gb = "0"
@@ -86,7 +86,7 @@ def get_bjdong_code(search_term):
     try:
         data = requests.get(url, timeout=10).json()
         if data.get("StanReginCd"):
-            rows = data["StanReginCd"][1]["row"]
+            rows   = data["StanReginCd"][1]["row"]
             active = [r for r in rows if r["sido_cd"] != "" and r["sgg_cd"] != ""]
             if active:
                 rc = active[0]["region_cd"]
@@ -95,14 +95,23 @@ def get_bjdong_code(search_term):
     return None, None, None
 
 def match_dong(target, dong_nm, bld_nm):
+    """동 이름 일치 여부 — 동명 없으면 False 반환 (상가동 오매칭 방지)"""
     if not target: return True
+    dong_empty = not str(dong_nm).strip() or str(dong_nm).strip() in ("", "None", "nan")
+    bld_empty  = not str(bld_nm).strip()  or str(bld_nm).strip()  in ("", "None", "nan")
+    if dong_empty and bld_empty: return False
+
     t = re.sub(r"[^A-Za-z0-9가-힣]", "", str(target)).replace("동","").replace("제","").upper()
     d = re.sub(r"[^A-Za-z0-9가-힣]", "", str(dong_nm)).replace("동","").replace("제","").upper()
     b = re.sub(r"[^A-Za-z0-9가-힣]", "", str(bld_nm)).upper()
-    if t == d or f"{t}동" in b: return True
+
+    if t and d and t == d: return True
+    if t and f"{t}동" in b: return True
     nums = re.findall(r"\d+", t)
     if nums:
-        n = nums[-1]; short = str(int(n) % 100)
+        n     = nums[-1]
+        short = str(int(n) % 100)
+        if not d: return False
         if d in (f"주{short}", short, f"주{n}", n): return True
         if f"{n}동" in b: return True
     return False
@@ -116,7 +125,7 @@ def match_ho(target, ho_nm):
     return bool(tn and hn and tn[-1] == hn[-1])
 
 # ─────────────────────────────────────────────────────────────
-# 5. 건축물대장 API 공통 호출 함수 (리스트 반환)
+# 5. 건축물대장 API 호출 (전 페이지 수집)
 # ─────────────────────────────────────────────────────────────
 def fetch_bld_api(endpoint, sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=50):
     all_items = []
@@ -146,7 +155,6 @@ def fetch_bld_api(endpoint, sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=50):
 # 6. 부속지번(외필지) 전수 수집
 # ─────────────────────────────────────────────────────────────
 def get_all_jibun(sgg_cd, bjdong_cd, plat_gb, bun, ji):
-    """대표지번 + 부속지번(외필지) 전체 리스트 반환"""
     result = [(sgg_cd, bjdong_cd, plat_gb, bun, ji)]
     items  = fetch_bld_api(URL_ATCH, sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=5)
     for item in items:
@@ -162,12 +170,12 @@ def get_all_jibun(sgg_cd, bjdong_cd, plat_gb, bun, ji):
     return result
 
 # ─────────────────────────────────────────────────────────────
-# 7. 건축물대장 메인 조회 함수
+# 7. 건축물대장 메인 조회
 # ─────────────────────────────────────────────────────────────
 def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", target_ho=""):
     status     = st.empty()
-    plat_cands = ["3","2","0"] if plat_gb != "1" else ["1"]
-    pk_map     = {}  # mgmBldrgstPk → {dong, bld}
+    plat_cands = ["3", "2", "0"] if plat_gb != "1" else ["1"]
+    pk_map     = {}
 
     def restore(r, key):
         v = r.get(key, "")
@@ -177,17 +185,17 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 return pk_map[pk].get("dong" if key == "dongNm" else "bld", "")
         return v
 
-    # ── STEP 0: 부속지번 수집 ───────────────────────────────
-    status.info("🗺️ 단지 필지 구성 파악 중 (부속지번 조회)...")
+    # ── STEP 0: 부속지번(외필지) 수집 ──────────────────────
+    status.info("🗺️ 단지 필지 구성 파악 중...")
     all_jibun = get_all_jibun(sgg_cd, bjdong_cd, plat_gb, bun, ji)
 
     # ── STEP 1: 표제부 — 전 필지 전수 수집 ─────────────────
-    status.info("📋 표제부 수집 중 (전 필지 탐색)...")
+    status.info("📋 표제부 수집 중...")
     raw_titles = []
     for (js, jb, jp, jbun, jji) in all_jibun:
         for p_gb in plat_cands:
             items = fetch_bld_api(URL_TITLE, js, jb, p_gb, jbun, jji, max_pages=10)
-            valid = [x for x in items if _to_float(x.get("totArea","0")) > 0]
+            valid = [x for x in items if to_float(x.get("totArea", "0")) > 0]
             if valid:
                 raw_titles.extend(valid)
                 break
@@ -202,33 +210,32 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
 
     df_titles = pd.DataFrame(unique_titles) if unique_titles else pd.DataFrame()
 
-    # pk_map 구성
     for item in unique_titles:
         pk = item.get("mgmBldrgstPk")
         if pk:
-            pk_map[pk] = {"dong": item.get("dongNm",""), "bld": item.get("bldNm","")}
+            pk_map[pk] = {"dong": item.get("dongNm", ""), "bld": item.get("bldNm", "")}
 
     # 동 필터 PK 세트
     target_pks = set()
     if target_dong and not df_titles.empty:
         for _, row in df_titles.iterrows():
-            if match_dong(target_dong, row.get("dongNm",""), row.get("bldNm","")):
+            if match_dong(target_dong, row.get("dongNm", ""), row.get("bldNm", "")):
                 pk = row.get("mgmBldrgstPk")
                 if pk: target_pks.add(pk)
 
-    # ── STEP 2: 총괄표제부 — 대표지번 기준 ─────────────────
+    # ── STEP 2: 총괄표제부 ──────────────────────────────────
     status.info("🏢 총괄표제부 수집 중...")
     df_recap = pd.DataFrame()
-    for p_gb in ["0","2","3","1"]:
+    for p_gb in ["0", "2", "3", "1"]:
         items = fetch_bld_api(URL_RECAP, sgg_cd, bjdong_cd, p_gb, bun, ji, max_pages=2)
-        valid = [x for x in items if _to_float(x.get("totArea","0")) > 0]
+        valid = [x for x in items if to_float(x.get("totArea", "0")) > 0]
         if valid:
             df_recap = pd.DataFrame(valid)
             break
 
     # ── STEP 3: 전유공용면적 — 전 필지 교차 탐색 ───────────
-    status.info("🏠 전유공용면적 수집 중 (전 필지 교차 탐색)...")
-    df_expos      = pd.DataFrame()
+    status.info("🏠 전유공용면적 수집 중...")
+    df_expos        = pd.DataFrame()
     is_missing_area = False
 
     if target_ho:
@@ -244,30 +251,31 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 tmp["bldNm"]  = tmp.apply(lambda r: restore(r, "bldNm"),  axis=1)
 
                 # 1차: 호수 매칭
-                matched = tmp[tmp.apply(lambda r: match_ho(target_ho, r.get("hoNm","")), axis=1)]
+                matched = tmp[tmp.apply(lambda r: match_ho(target_ho, r.get("hoNm", "")), axis=1)]
                 if matched.empty: continue
 
-                # 2차: 동 매칭 (동 입력 시)
+                # 2차: 동 매칭 (동 입력 시) — 실패 시 이 필지 스킵 (fallback 없음)
                 if target_dong:
                     m2 = matched[matched.apply(
                         lambda r: r.get("mgmBldrgstPk") in target_pks
-                                  or match_dong(target_dong, r.get("dongNm",""), r.get("bldNm","")),
+                                  or match_dong(target_dong, r.get("dongNm", ""), r.get("bldNm", "")),
                         axis=1
                     )]
-                    # 동 이름이 API에 누락된 경우에도 호수 매칭 결과 사용
-                    matched = m2 if not m2.empty else matched
+                    if m2.empty:
+                        continue  # 상가동 등 다른 동 오매칭 방지 — 다음 필지로
+                    matched = m2
 
                 df_expos = matched.copy()
                 if "area" not in df_expos.columns:
                     df_expos["area"] = "0"
-                    is_missing_area = True
+                    is_missing_area  = True
                 found = True
                 break
 
     # ── STEP 4: 층별개요 — 전 필지 교차 탐색 ───────────────
-    status.info("🪜 층별개요 수집 중 (전 필지 교차 탐색)...")
+    status.info("🪜 층별개요 수집 중...")
     df_floor = pd.DataFrame()
-    found = False
+    found    = False
     for (js, jb, jp, jbun, jji) in all_jibun:
         if found: break
         for p_gb in plat_cands:
@@ -282,12 +290,14 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 tmp = tmp[tmp["mgmBldrgstPk"].isin(target_pks)]
             elif target_dong:
                 tmp = tmp[tmp.apply(
-                    lambda r: match_dong(target_dong, r.get("dongNm",""), r.get("bldNm","")), axis=1
+                    lambda r: match_dong(target_dong, r.get("dongNm", ""), r.get("bldNm", "")), axis=1
                 )]
 
             if not tmp.empty:
                 tmp = tmp.copy()
-                tmp["_n"] = pd.to_numeric(tmp.get("flrNo", pd.Series(dtype=str)), errors="coerce").fillna(-99)
+                tmp["_n"] = pd.to_numeric(
+                    tmp.get("flrNo", pd.Series(dtype=str)), errors="coerce"
+                ).fillna(-99)
                 df_floor = tmp.sort_values("_n", ascending=False).drop(columns=["_n"])
                 found = True
                 break
@@ -296,16 +306,16 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
     return df_recap, df_titles, df_expos, df_floor, is_missing_area, len(all_jibun)
 
 # ─────────────────────────────────────────────────────────────
-# 8. 실거래가 함수 (기존 유지)
+# 8. 실거래가 함수
 # ─────────────────────────────────────────────────────────────
 def get_sigungu_code(sigungu_name, dong_name):
     search_term = dong_name.strip() if dong_name.strip() else sigungu_name.strip()
     url = (f"https://apis.data.go.kr/1741000/StanReginCd/getStanReginCdList"
            f"?serviceKey={DONG_API_KEY}&pageNo=1&numOfRows=500&type=json&locatadd_nm={search_term}")
     try:
-        response = requests.get(url, timeout=10)
-        if not response.text.strip(): return None, None
-        data = response.json()
+        res = requests.get(url, timeout=10)
+        if not res.text.strip(): return None, None
+        data = res.json()
         if data.get("StanReginCd"):
             rows   = data["StanReginCd"][1]["row"]
             active = [r for r in rows if r["sido_cd"] != "" and r["sgg_cd"] != ""]
@@ -330,13 +340,17 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         st.error("조회 기간 형식 오류 (YYYYMM)")
         return pd.DataFrame()
 
-    all_data, progress_bar, status_text = [], st.progress(0), st.empty()
+    all_data      = []
+    progress_bar  = st.progress(0)
+    status_text   = st.empty()
+
     for i, ym in enumerate(month_list):
         status_text.text(f"⏳ {ym} 조회 중... ({i+1}/{len(month_list)})")
-        progress_bar.progress((i+1)/len(month_list))
-        url = f"{base_url}?serviceKey={MOLIT_API_KEY}&pageNo=1&numOfRows=1000&LAWD_CD={sigungu_code}&DEAL_YMD={ym}"
+        progress_bar.progress((i+1) / len(month_list))
+        url = (f"{base_url}?serviceKey={MOLIT_API_KEY}"
+               f"&pageNo=1&numOfRows=1000&LAWD_CD={sigungu_code}&DEAL_YMD={ym}")
         try:
-            res = requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=15)
+            res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
             if not res.text.strip().startswith("<"): break
             xml_data = xmltodict.parse(res.content)
             if "OpenAPI_ServiceResponse" in xml_data: break
@@ -350,6 +364,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         time.sleep(0.3)
 
     status_text.empty(); progress_bar.empty()
+
     if not all_data:
         st.warning("거래 내역이 없거나 조회가 중단되었습니다.")
         return pd.DataFrame()
@@ -362,7 +377,8 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         return pd.DataFrame()
 
     df = df.rename(columns={
-        "dealYear":"년","dealMonth":"월","dealDay":"일","umdNm":"법정동","jibun":"지번",
+        "dealYear":"년","dealMonth":"월","dealDay":"일",
+        "umdNm":"법정동","jibun":"지번",
         "aptNm":"건물명","offiNm":"건물명","mviNm":"건물명","bldgNm":"건물명",
         "rletTypeNm":"건물유형","rletTpNm":"건물유형","buildingType":"건물유형",
         "purpsRgnNm":"용도지역","prpsRgnNm":"용도지역","landUse":"용도지역",
@@ -388,21 +404,26 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         if area_col:
             def pyeong(row):
                 try:
-                    p = int(str(row["거래금액"]).replace(",","")); a = float(str(row[area_col]).replace(",",""))
+                    p = int(str(row["거래금액"]).replace(",", ""))
+                    a = float(str(row[area_col]).replace(",", ""))
                     if a <= 0: return ""
-                    pp = int(p/(a/3.3058)); uk,man = pp//10000, pp%10000
+                    pp = int(p / (a / 3.3058)); uk, man = pp // 10000, pp % 10000
                     return (f"{uk}억 {man}만원" if man else f"{uk}억원") if uk else f"{pp}만원"
                 except: return ""
             df["평당가격"] = df.apply(pyeong, axis=1)
-    disp = ["계약일","소재지","건물유형","용도지역","건물주용도","건물명","건축년도","대지면적","건물면적","연면적","전용면적","층","거래금액","평당가격","매수자","매도자","지분거래여부","거래유형","중개사소재지","계약취소일"]
+
+    disp = ["계약일","소재지","건물유형","용도지역","건물주용도","건물명","건축년도",
+            "대지면적","건물면적","연면적","전용면적","층","거래금액","평당가격",
+            "매수자","매도자","지분거래여부","거래유형","중개사소재지","계약취소일"]
     df = df[[c for c in disp if c in df.columns]].copy()
+
     def fmt_money(v):
         if pd.isna(v): return ""
         try:
-            p = int(str(v).replace(",","")); uk,man = p//10000, p%10000
+            p = int(str(v).replace(",", "")); uk, man = p // 10000, p % 10000
             return (f"{uk}억 {man}만원" if man else f"{uk}억원") if uk else f"{p}만원"
         except: return v
-    for col in ["거래금액","보증금"]:
+    for col in ["거래금액", "보증금"]:
         if col in df.columns: df[col] = df[col].apply(fmt_money)
     if "계약일" in df.columns: df = df.sort_values("계약일", ascending=False)
     return df
@@ -413,47 +434,53 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 st.set_page_config(page_title="부동산 올인원 봇", layout="wide")
 st.title("🏢 부동산 올인원 실거래가 & 건축물대장 봇")
 
-tab1, tab2 = st.tabs(["💰 실거래가 조회", "📋 건축물대장 조회 (정부24 방식)"])
+tab1, tab2 = st.tabs(["💰 실거래가 조회", "📋 건축물대장 조회"])
 
-# ── 탭 1: 실거래가 ───────────────────────────────────────────
+# ════════════════════════════════════════════════════════════
+# 탭 1: 실거래가
+# ════════════════════════════════════════════════════════════
 with tab1:
     now = pd.Timestamp.now()
     with st.form("form_trade"):
         c1, c2 = st.columns(2)
         with c1: prop_t = st.selectbox("매물 종류", ["아파트","아파트분양권","오피스텔","연립/다세대","단독/다가구","상업/업무용","공장 및 창고","토지"])
         with c2: tran_t = st.selectbox("거래 종류", ["매매","전월세"])
-        c3,c4,c5,c6 = st.columns(4)
-        with c3: sgg_nm  = st.text_input("시/군/구", value="서초구")
-        with c4: dn_nm   = st.text_input("법정동 (빈칸=구 전체)")
-        with c5: s_mon   = st.text_input("시작월 YYYYMM", value=(now - pd.DateOffset(months=1)).strftime("%Y%m"))
-        with c6: e_mon   = st.text_input("종료월 YYYYMM", value=now.strftime("%Y%m"))
+        c3, c4, c5, c6 = st.columns(4)
+        with c3: sgg_nm = st.text_input("시/군/구", value="서초구")
+        with c4: dn_nm  = st.text_input("법정동 (빈칸=구 전체)")
+        with c5: s_mon  = st.text_input("시작월 YYYYMM", value=(now - pd.DateOffset(months=1)).strftime("%Y%m"))
+        with c6: e_mon  = st.text_input("종료월 YYYYMM", value=now.strftime("%Y%m"))
         sub1 = st.form_submit_button("🔍 실거래가 조회")
 
     if sub1:
-        if not sgg_nm: st.warning("시/군/구를 입력하세요.")
+        if not sgg_nm:
+            st.warning("시/군/구를 입력하세요.")
         else:
             code, loc = get_sigungu_code(sgg_nm, dn_nm)
             if code:
                 st.success(f"✅ {loc} ({code})")
                 rdf = get_real_estate_data(code, s_mon, e_mon, dn_nm, prop_t, tran_t)
                 if not rdf.empty:
-                    rdf.index = range(1, len(rdf)+1)
+                    rdf.index = range(1, len(rdf) + 1)
                     st.dataframe(rdf, use_container_width=True)
                     buf = BytesIO()
                     with pd.ExcelWriter(buf, engine="xlsxwriter") as wr:
                         rdf.to_excel(wr, index=True, index_label="순번", sheet_name="실거래가")
                     st.download_button("📥 엑셀 다운로드", buf.getvalue(), "실거래가.xlsx")
-            else: st.error("지역을 찾을 수 없습니다.")
+            else:
+                st.error("지역을 찾을 수 없습니다.")
 
-# ── 탭 2: 건축물대장 ─────────────────────────────────────────
+# ════════════════════════════════════════════════════════════
+# 탭 2: 건축물대장
+# ════════════════════════════════════════════════════════════
 with tab2:
     st.subheader("📋 건축물대장 종합 조회")
-    st.caption("💡 대단지 아파트(외필지 단지)도 동·호수별 전유공용면적 정상 조회됩니다.")
+    st.caption("💡 대단지 아파트(외필지) · 아파트·상가 복합단지 모두 동/호수별 정상 조회됩니다.")
 
     with st.form("form_bld"):
         c1, c2, c3 = st.columns([3, 1, 1])
         with c1: addr_in = st.text_input("지번 주소 (필수)", placeholder="예: 상도동 450  /  사당동 300-5")
-        with c2: dong_in = st.text_input("동 (선택)",   placeholder="예: 105")
+        with c2: dong_in = st.text_input("동 (선택)", placeholder="예: 105")
         with c3: ho_in   = st.text_input("호수 (선택)", placeholder="예: 302")
         sub2 = st.form_submit_button("🔍 건축물대장 열람")
 
@@ -473,7 +500,7 @@ with tab2:
         df_recap, df_titles, df_expos, df_floor, is_missing_area, jibun_cnt = get_building_ledger(
             sgg_cd, bjdong_cd, plat_gb, bun, ji, dong_in, ho_in
         )
-        st.caption(f"📌 조회된 필지 수: {jibun_cnt}개 (외필지 포함)")
+        st.caption(f"📌 조회된 총 필지 수: {jibun_cnt}개 (외필지 포함)")
 
         if df_recap.empty and df_titles.empty:
             st.error("🚨 조회 결과 없음. 지번 주소를 다시 확인해주세요.")
@@ -485,12 +512,12 @@ with tab2:
             if viol_src["violBldYn"].astype(str).str.contains("1").any():
                 st.error("🚨 [주의] 위반건축물 대장입니다! 정부24 원본 서류를 반드시 확인하세요.")
 
-        # ════ 섹션 A: 총괄표제부 ═════════════════════════════
+        # ════ 섹션 A: 총괄표제부 ════════════════════════════════
         if not df_recap.empty:
             r = df_recap.iloc[0]
             st.markdown("---")
             st.markdown("### 🏢 총괄표제부")
-            st.markdown(f"**📍 {safe_val(r.get('bldNm'),'명칭없음')}**  `{safe_val(r.get('platPlc', r.get('newPlatPlc')))}`")
+            st.markdown(f"**📍 {safe_val(r.get('bldNm'), '명칭없음')}**  `{safe_val(r.get('platPlc', r.get('newPlatPlc')))}`")
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown(f"""
@@ -507,15 +534,15 @@ with tab2:
                 st.markdown(f"""
 | 항목 | 내용 |
 |---|---|
-| 총 세대수 | {safe_val(r.get('hhldCnt'),'0')} 세대 |
-| 총 가구수 | {safe_val(r.get('fmlyCnt'),'0')} 가구 |
-| 총 주차대수 | {safe_val(r.get('totPkngCnt'),'0')} 대 |
-| 주건축물수 | {safe_val(r.get('mainBldCnt'),'0')} 동 |
-| 부속건축물수 | {safe_val(r.get('atchBldCnt'),'0')} 동 |
+| 총 세대수 | {safe_val(r.get('hhldCnt'), '0')} 세대 |
+| 총 가구수 | {safe_val(r.get('fmlyCnt'), '0')} 가구 |
+| 총 주차대수 | {safe_val(r.get('totPkngCnt'), '0')} 대 |
+| 주건축물수 | {safe_val(r.get('mainBldCnt'), '0')} 동 |
+| 부속건축물수 | {safe_val(r.get('atchBldCnt'), '0')} 동 |
 | 에너지효율등급 | {safe_val(r.get('engrGrade'))} |
                 """)
 
-        # ════ 섹션 B: 표제부 — 전체 동 목록 ════════════════════
+        # ════ 섹션 B: 표제부 (전체 동 목록 + 상세) ═════════════
         if not df_titles.empty:
             st.markdown("---")
             st.markdown("### 📄 표제부 — 전체 동 목록")
@@ -526,24 +553,24 @@ with tab2:
                 "heit":"높이(m)","totArea":"연면적(㎡)","hhldCnt":"세대수",
                 "useAprDay":"사용승인일","violBldYn":"위반건축물",
             }
-            ex = {k:v for k,v in sum_cols.items() if k in df_titles.columns}
+            ex = {k: v for k, v in sum_cols.items() if k in df_titles.columns}
             df_show = df_titles[list(ex.keys())].rename(columns=ex).copy()
             if "사용승인일" in df_show.columns:
                 df_show["사용승인일"] = df_show["사용승인일"].apply(fmt_date)
             if "위반건축물" in df_show.columns:
                 df_show["위반건축물"] = df_show["위반건축물"].apply(
-                    lambda x: "⚠️ 위반" if str(x).strip()=="1" else "정상"
+                    lambda x: "⚠️ 위반" if str(x).strip() == "1" else "정상"
                 )
-            df_show.index = range(1, len(df_show)+1)
+            df_show.index = range(1, len(df_show) + 1)
             st.caption(f"총 {len(df_show)}개 동 조회됨")
             st.dataframe(df_show, use_container_width=True)
 
-            # 동 상세 (동 입력 시 해당 동, 없으면 첫 번째 동)
+            # 동 상세
             if dong_in:
                 filtered = df_titles[df_titles.apply(
-                    lambda r: match_dong(dong_in, r.get("dongNm",""), r.get("bldNm","")), axis=1
+                    lambda r: match_dong(dong_in, r.get("dongNm", ""), r.get("bldNm", "")), axis=1
                 )]
-                dr = filtered.iloc[0] if not filtered.empty else df_titles.iloc[0]
+                dr    = filtered.iloc[0] if not filtered.empty else df_titles.iloc[0]
                 label = dong_in + "동"
             else:
                 dr    = df_titles.iloc[0]
@@ -570,7 +597,7 @@ with tab2:
 |---|---|
 | 주구조 | {safe_val(dr.get('strctCdNm'))} |
 | 지붕 | {safe_val(dr.get('roofCdNm'))} |
-| 규모 | 지하 {safe_val(dr.get('ugrndFlrCnt'),'0')}층 / 지상 {safe_val(dr.get('grndFlrCnt'),'0')}층 |
+| 규모 | 지하 {safe_val(dr.get('ugrndFlrCnt'), '0')}층 / 지상 {safe_val(dr.get('grndFlrCnt'), '0')}층 |
 | 높이 | {safe_val(dr.get('heit'))} m |
 | 대지면적 | {safe_val(dr.get('platArea'))} ㎡ |
 | 건축면적 | {safe_val(dr.get('archArea'))} ㎡ |
@@ -584,10 +611,10 @@ with tab2:
 |---|---|
 | 건폐율 | {safe_val(dr.get('bcRat'))} % |
 | 용적률 | {safe_val(dr.get('vlRat'))} % |
-| 세대수 | {safe_val(dr.get('hhldCnt'),'0')} 세대 |
-| 가구수 | {safe_val(dr.get('fmlyCnt'),'0')} 가구 |
-| 승용승강기 | {safe_val(dr.get('rideUseElvtCnt'),'0')} 대 |
-| 비상승강기 | {safe_val(dr.get('emgenUseElvtCnt'),'0')} 대 |
+| 세대수 | {safe_val(dr.get('hhldCnt'), '0')} 세대 |
+| 가구수 | {safe_val(dr.get('fmlyCnt'), '0')} 가구 |
+| 승용승강기 | {safe_val(dr.get('rideUseElvtCnt'), '0')} 대 |
+| 비상승강기 | {safe_val(dr.get('emgenUseElvtCnt'), '0')} 대 |
                     """)
                 with c4:
                     st.markdown(f"""
@@ -606,19 +633,21 @@ with tab2:
         # ════ 섹션 C: 전유공용면적 (호수 입력 시) ══════════════
         if ho_in:
             st.markdown("---")
-            st.markdown(f"### 🚪 전유공용면적 — {(dong_in+'동 ') if dong_in else ''}{ho_in}호")
+            st.markdown(f"### 🚪 전유공용면적 — {(dong_in + '동 ') if dong_in else ''}{ho_in}호")
+
             if df_expos.empty:
                 st.warning(
                     "⚠️ 전유공용면적 데이터를 찾을 수 없습니다.\n\n"
                     "**확인 사항:**\n"
                     "- 집합건물(아파트·오피스텔·다세대)만 존재합니다\n"
-                    "- 동 번호 입력 형식 확인 (예: 105동 → `105`)\n"
-                    "- 호수 입력 형식 확인 (예: 302호 → `302`)"
+                    "- 동 번호 형식 확인 (예: 105동 → `105`)\n"
+                    "- 호수 형식 확인 (예: 302호 → `302`)"
                 )
             else:
                 pks = df_expos["mgmBldrgstPk"].unique() if "mgmBldrgstPk" in df_expos.columns else [None]
                 for pk in pks[:3]:
                     grp = df_expos[df_expos["mgmBldrgstPk"] == pk] if pk else df_expos
+
                     if "exposPubuseGbCdNm" in grp.columns:
                         df_j = grp[grp["exposPubuseGbCdNm"].astype(str).str.contains("전유", na=False)]
                         df_g = grp[grp["exposPubuseGbCdNm"].astype(str).str.contains("공용", na=False)]
@@ -626,12 +655,16 @@ with tab2:
                         df_j, df_g = grp, pd.DataFrame()
                     if df_j.empty: df_j = grp
 
-                    j_area = sum(_to_float(x) for x in df_j["area"].tolist()) if not is_missing_area and "area" in df_j.columns else 0.0
-                    g_area = sum(_to_float(x) for x in df_g["area"].tolist()) if not is_missing_area and not df_g.empty and "area" in df_g.columns else 0.0
+                    j_area = sum(to_float(x) for x in df_j["area"].tolist()) if (not is_missing_area and "area" in df_j.columns) else 0.0
+                    g_area = sum(to_float(x) for x in df_g["area"].tolist()) if (not is_missing_area and not df_g.empty and "area" in df_g.columns) else 0.0
                     t_area = j_area + g_area
                     mr     = df_j.iloc[0]
-                    d_nm   = safe_val(mr.get("dongNm"), dong_in + "동" if dong_in else "")
-                    full_nm = " ".join(filter(None, [safe_val(mr.get("bldNm"),""), d_nm, safe_val(mr.get("hoNm"), ho_in+"호")]))
+                    d_disp = safe_val(mr.get("dongNm"), (dong_in + "동") if dong_in else "")
+                    full_nm = " ".join(filter(None, [
+                        safe_val(mr.get("bldNm"), ""),
+                        d_disp,
+                        safe_val(mr.get("hoNm"), ho_in + "호")
+                    ]))
 
                     with st.container(border=True):
                         st.markdown(f"#### {full_nm}")
@@ -648,20 +681,20 @@ with tab2:
                             """)
                         with c2:
                             j_disp = f"**{j_area:,.2f} ㎡**" if not is_missing_area else "⚠️ API 누락"
-                            g_disp = f"{g_area:,.2f} ㎡"     if not is_missing_area else "⚠️ 누락"
-                            t_disp = f"**{t_area:,.2f} ㎡**" if not is_missing_area else "확인 불가"
+                            g_disp = f"{g_area:,.2f} ㎡"      if not is_missing_area else "⚠️ 누락"
+                            t_disp = f"**{t_area:,.2f} ㎡**"  if not is_missing_area else "확인 불가"
                             st.markdown(f"""
 | 면적 구분 | 면적 |
 |---|---|
 | 전용면적 | {j_disp} |
 | 공용면적 | {g_disp} |
 | **계약면적(합계)** | {t_disp} |
-| 평형 환산 | 약 {t_area/3.3058:.1f} 평 |
+| 평형 환산 | 약 {t_area / 3.3058:.1f} 평 |
                             """)
                         if "exposPubuseGbCdNm" in grp.columns:
                             with st.expander("면적 상세 내역 펼치기"):
-                                dc = grp[["exposPubuseGbCdNm","mainPurpsCdNm","area"]].copy()
-                                dc.columns = ["전유/공용","용도","면적(㎡)"]
+                                dc = grp[["exposPubuseGbCdNm", "mainPurpsCdNm", "area"]].copy()
+                                dc.columns = ["전유/공용", "용도", "면적(㎡)"]
                                 st.dataframe(dc, use_container_width=True)
 
         # ════ 섹션 D: 층별개요 ══════════════════════════════════
@@ -670,11 +703,15 @@ with tab2:
         if df_floor.empty:
             st.info("층별개요 데이터가 없습니다. 동 이름을 입력하면 해당 동의 층별 현황을 조회합니다.")
         else:
-            fl_col = {k:v for k,v in {"dongNm":"동명칭","flrNoNm":"층","mainPurpsCdNm":"주용도","strctCdNm":"구조","area":"면적(㎡)"}.items() if k in df_floor.columns}
+            fl_col = {k: v for k, v in {
+                "dongNm":"동명칭","flrNoNm":"층","mainPurpsCdNm":"주용도",
+                "strctCdNm":"구조","area":"면적(㎡)"
+            }.items() if k in df_floor.columns}
             df_fl = df_floor[list(fl_col.keys())].rename(columns=fl_col).copy()
-            df_fl.index = range(1, len(df_fl)+1)
+            df_fl.index = range(1, len(df_fl) + 1)
             st.caption(f"총 {len(df_fl)}개 층 데이터")
             st.dataframe(df_fl, use_container_width=True)
 
         st.markdown("---")
-        st.caption("※ 국토교통부 건축HUB API 기반 조회 / 법적 효력 없음 / 공식 증명서는 정부24·세움터에서 발급")
+        st.caption("※ 국토교통부 건축HUB API 기반 / 법적 효력 없음 / 공식 증명서는 정부24·세움터에서 발급")
+
