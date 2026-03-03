@@ -263,102 +263,76 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
         if valid:
             df_recap = pd.DataFrame(valid); break
 
-    # ─────────────────────────────────────────────────────
-    # STEP 3: 전유공용면적
-    #
-    # 1순위: target_pks(표제부 동 pk)로 mgmBldrgstPk 직접 조회
-    #         → 어떤 지번에 데이터가 있든 정확히 해당 동만 가져옴
-    # 2순위: 지번 탐색 fallback (1순위 실패 시)
-    # ─────────────────────────────────────────────────────
+       # STEP 3: 전유공용면적
     status.info("🏠 전유공용면적 수집 중...")
     df_expos        = pd.DataFrame()
     is_missing_area = False
     expos_debug_log = []
 
     if target_ho:
-        found = False
+        found        = False
+        # target_exact_jibun(해당 동 지번) 우선, 나머지 fallback
+        search_jibun = target_exact_jibun + [j for j in all_jibun if j not in target_exact_jibun]
 
-        # ① 1순위: pk 직접 조회
-        if target_pks:
-            for pk in target_pks:
-                if found: break
-                items = fetch_expos_by_pk(pk, max_pages=10)
+        for (js, jb, jp, jbun, jji) in search_jibun:
+            if found: break
+            for p_gb in ([jp] + [x for x in plat_cands if x != jp]):
+                items = fetch_expos_all(js, jb, p_gb, jbun, jji, max_pages=20)
                 if not items: continue
 
                 tmp = pd.DataFrame(items)
                 tmp["dongNm"] = tmp.apply(lambda r: restore(r,"dongNm"), axis=1)
                 tmp["bldNm"]  = tmp.apply(lambda r: restore(r,"bldNm"),  axis=1)
 
-                expos_debug_log.append({
-                    "방식": f"pk직접조회 pk={pk}",
-                    "전체건수": len(tmp),
-                    "hoNm샘플": tmp["hoNm"].tolist()[:5] if "hoNm" in tmp.columns else [],
-                })
+                # ① hoNm 필터 (필수)
+                ho_matched = tmp[tmp.apply(lambda r: match_ho(target_ho, r.get("hoNm","")), axis=1)]
 
-                tmp = tmp[tmp.apply(lambda r: match_ho(target_ho, r.get("hoNm","")), axis=1)]
-                expos_debug_log.append({"hoNm매칭건수": len(tmp)})
+                if not ho_matched.empty:
+                    expos_debug_log.append({
+                        "지번": f"bun={jbun} ji={jji} platGb={p_gb}",
+                        "전체건수": len(tmp),
+                        "hoNm매칭건수": len(ho_matched),
+                        "dongNm목록": ho_matched["dongNm"].tolist()[:5],
+                        "pk목록":     ho_matched.get("mgmBldrgstPk", pd.Series()).tolist()[:5],
+                    })
+
+                tmp = ho_matched
                 if tmp.empty: continue
+
+                # ② 동 필터 — 3단계 우선순위
+                if target_dong:
+                    # 1순위: target_pks(표제부 동 pk) 일치
+                    m_pk = tmp[tmp["mgmBldrgstPk"].isin(target_pks)] \
+                           if ("mgmBldrgstPk" in tmp.columns and target_pks) else pd.DataFrame()
+                    # 2순위: dongNm 일치
+                    m_name = tmp[tmp.apply(
+                        lambda r: match_dong(target_dong, r.get("dongNm",""), r.get("bldNm","")), axis=1
+                    )]
+
+                    if not m_pk.empty:
+                        tmp = m_pk
+                        expos_debug_log.append({"동필터": "1순위 pk 일치", "건수": len(tmp)})
+                    elif not m_name.empty:
+                        tmp = m_name
+                        expos_debug_log.append({"동필터": "2순위 dongNm 일치", "건수": len(tmp)})
+                    else:
+                        # 3순위: 명백히 다른 동만 제거, dongNm 빈값은 허용
+                        before = len(tmp)
+                        tmp = tmp[~tmp.apply(
+                            lambda r: is_different_dong(target_dong, r.get("dongNm",""), r.get("bldNm","")), axis=1
+                        )]
+                        expos_debug_log.append({"동필터": "3순위 is_different_dong", "필터전": before, "필터후": len(tmp)})
+
+                if tmp.empty:
+                    expos_debug_log.append({"결과": f"동필터 후 empty → 다음 지번"})
+                    continue
 
                 df_expos = tmp.copy()
                 if "area" not in df_expos.columns:
                     df_expos["area"] = "0"; is_missing_area = True
-                found = True
+                found = True; break
+            if found: break
 
-        # ② 2순위: 지번 탐색 fallback
-        if not found:
-            expos_debug_log.append({"방식": "fallback — 지번 탐색"})
-            search_jibun = target_exact_jibun + [j for j in all_jibun if j not in target_exact_jibun]
-
-            for (js, jb, jp, jbun, jji) in search_jibun:
-                if found: break
-                for p_gb in ([jp] + [x for x in plat_cands if x != jp]):
-                    items = fetch_expos_all(js, jb, p_gb, jbun, jji, max_pages=20)
-                    if not items: continue
-
-                    tmp = pd.DataFrame(items)
-                    tmp["dongNm"] = tmp.apply(lambda r: restore(r,"dongNm"), axis=1)
-                    tmp["bldNm"]  = tmp.apply(lambda r: restore(r,"bldNm"),  axis=1)
-
-                    ho_matched = tmp[tmp.apply(lambda r: match_ho(target_ho, r.get("hoNm","")), axis=1)]
-                    if not ho_matched.empty:
-                        expos_debug_log.append({
-                            "지번": f"bun={jbun} ji={jji} platGb={p_gb}",
-                            "hoNm매칭건수": len(ho_matched),
-                            "dongNm목록": ho_matched["dongNm"].tolist()[:5],
-                            "pk목록": ho_matched.get("mgmBldrgstPk", pd.Series()).tolist()[:5],
-                        })
-
-                    tmp = ho_matched
-                    if tmp.empty: continue
-
-                    if target_dong:
-                        m_pk = tmp[tmp["mgmBldrgstPk"].isin(target_pks)] \
-                               if ("mgmBldrgstPk" in tmp.columns and target_pks) else pd.DataFrame()
-                        m_name = tmp[tmp.apply(
-                            lambda r: match_dong(target_dong, r.get("dongNm",""), r.get("bldNm","")), axis=1
-                        )]
-                        if not m_pk.empty:
-                            tmp = m_pk
-                            expos_debug_log.append({"동필터": "1순위 pk 일치", "건수": len(tmp)})
-                        elif not m_name.empty:
-                            tmp = m_name
-                            expos_debug_log.append({"동필터": "2순위 dongNm 일치", "건수": len(tmp)})
-                        else:
-                            before = len(tmp)
-                            tmp = tmp[~tmp.apply(
-                                lambda r: is_different_dong(target_dong, r.get("dongNm",""), r.get("bldNm","")), axis=1
-                            )]
-                            expos_debug_log.append({"동필터": "3순위 is_different_dong", "필터전": before, "필터후": len(tmp)})
-
-                    if tmp.empty:
-                        expos_debug_log.append({"결과": "동필터 후 empty → 다음 지번"})
-                        continue
-
-                    df_expos = tmp.copy()
-                    if "area" not in df_expos.columns:
-                        df_expos["area"] = "0"; is_missing_area = True
-                    found = True; break
-                if found: break
 
     # STEP 4: 층별개요
     status.info("🪜 층별개요 수집 중...")
