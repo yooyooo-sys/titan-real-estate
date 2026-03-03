@@ -9,8 +9,8 @@ from io import BytesIO
 # ─────────────────────────────────────────
 # 1. API 키 설정
 # ─────────────────────────────────────────
-DONG_API_KEY  = "여기에_인증키_입력"
-MOLIT_API_KEY = "여기에_인증키_입력"
+DONG_API_KEY  = "z92CW%2FlIVtpHa46lUJJ5WCMBVQEu8C8YQS9sY2nFsG3nKq0S2J4W997c7ENV6x02Rsnf6RKJcY1hc8cLc2OlxQ%3D%3D"
+MOLIT_API_KEY = "z92CW%2FlIVtpHa46lUJJ5WCMBVQEu8C8YQS9sY2nFsG3nKq0S2J4W997c7ENV6x02Rsnf6RKJcY1hc8cLc2OlxQ%3D%3D"
 
 # ─────────────────────────────────────────
 # 2. 실거래가 API 경로 (기존 유지)
