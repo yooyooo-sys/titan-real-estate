@@ -233,14 +233,20 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
             df_recap = pd.DataFrame(valid)
             break
 
-    # ── STEP 3: 전유공용면적 — 전 필지 교차 탐색 ───────────
+    # ── STEP 3: 전유공용면적 — 전 필지 + ji=0000 fallback ─────
     status.info("🏠 전유공용면적 수집 중...")
     df_expos        = pd.DataFrame()
     is_missing_area = False
 
     if target_ho:
+        # ji=0000 fallback 추가 (부속지번 누락 대비)
+        jibun_ext = list(all_jibun)
+        fallback = (sgg_cd, bjdong_cd, plat_gb, bun, "0000")
+        if fallback not in jibun_ext:
+            jibun_ext.append(fallback)
+
         found = False
-        for (js, jb, jp, jbun, jji) in all_jibun:
+        for (js, jb, jp, jbun, jji) in jibun_ext:
             if found: break
             for p_gb in plat_cands:
                 items = fetch_bld_api(URL_EXPOS, js, jb, p_gb, jbun, jji, max_pages=50)
@@ -254,16 +260,26 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 matched = tmp[tmp.apply(lambda r: match_ho(target_ho, r.get("hoNm", "")), axis=1)]
                 if matched.empty: continue
 
-                # 2차: 동 매칭 (동 입력 시) — 실패 시 이 필지 스킵 (fallback 없음)
+                # 2차: 동 매칭 (3단계 우선순위)
                 if target_dong:
-                    m2 = matched[matched.apply(
-                        lambda r: r.get("mgmBldrgstPk") in target_pks
-                                  or match_dong(target_dong, r.get("dongNm", ""), r.get("bldNm", "")),
-                        axis=1
-                    )]
-                    if m2.empty:
-                        continue  # 상가동 등 다른 동 오매칭 방지 — 다음 필지로
-                    matched = m2
+                    # ① PK 기반 (가장 정확, dongNm 없어도 동작)
+                    m_pk = matched[matched["mgmBldrgstPk"].isin(target_pks)] if target_pks else pd.DataFrame()
+
+                    if not m_pk.empty:
+                        matched = m_pk  # ① 성공
+
+                    else:
+                        # ② 동 이름 기반
+                        m_name = matched[matched.apply(
+                            lambda r: match_dong(target_dong, r.get("dongNm", ""), r.get("bldNm", "")),
+                            axis=1
+                        )]
+                        if not m_name.empty:
+                            matched = m_name  # ② 성공
+                        elif target_pks:
+                            # ③ PK도 이름도 실패 + target_pks 있음 = 다른 동(상가 등) → 스킵
+                            continue
+                        # target_pks 없으면 호수만 매칭 결과 사용 (최후 수단)
 
                 df_expos = matched.copy()
                 if "area" not in df_expos.columns:
@@ -271,6 +287,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                     is_missing_area  = True
                 found = True
                 break
+
 
     # ── STEP 4: 층별개요 — 전 필지 교차 탐색 ───────────────
     status.info("🪜 층별개요 수집 중...")
