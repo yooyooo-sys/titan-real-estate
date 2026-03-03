@@ -284,7 +284,6 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                     )]
                     if not m_pk.empty:     tmp = m_pk
                     elif not m_name.empty: tmp = m_name
-                    else: continue
 
                 if tmp.empty: continue
                 df_expos = tmp.copy()
