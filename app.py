@@ -309,7 +309,18 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
         found        = False
         search_jibun = target_exact_jibun + [j for j in all_jibun if j not in target_exact_jibun]
 
-                for (js, jb, jp, jbun, jji) in search_jibun:
+        for (js, jb, jp, jbun, jji) in search_jibun:
+            if found: break
+            for p_gb in ([jp] + [x for x in plat_cands if x != jp]):
+
+                attempts = []
+                if dong_num:
+                    attempts.append((dong_num, api_ho_nm))           # ① 숫자형
+                    attempts.append((dong_with_suffix, api_ho_nm))   # ② 동접미사형
+                attempts.append(("", api_ho_nm))                     # ③ hoNm만
+                attempts.append(("", ""))                            # ④ 전체+클라이언트필터
+
+                       for (js, jb, jp, jbun, jji) in search_jibun:
             if found: break
             
             # ★ 이 지번이 target_dong의 정확한 지번인지 여부
@@ -783,3 +794,4 @@ with tab2:
 
         st.markdown("---")
         st.caption("※ 국토교통부 건축HUB API 기반 / 법적 효력 없음 / 공식 증명서는 정부24·세움터에서 발급")
+
