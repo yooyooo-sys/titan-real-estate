@@ -320,21 +320,6 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 attempts.append(("", api_ho_nm))                     # ③ hoNm만
                 attempts.append(("", ""))                            # ④ 전체+클라이언트필터
 
-                       for (js, jb, jp, jbun, jji) in search_jibun:
-            if found: break
-            
-            # ★ 이 지번이 target_dong의 정확한 지번인지 여부
-            is_exact_jibun = (js, jb, jp, jbun, jji) in target_exact_jibun
-            
-            for p_gb in ([jp] + [x for x in plat_cands if x != jp]):
-
-                attempts = []
-                if dong_num:
-                    attempts.append((dong_num, api_ho_nm))
-                    attempts.append((dong_with_suffix, api_ho_nm))
-                attempts.append(("", api_ho_nm))
-                attempts.append(("", ""))
-
                 for (try_dong, try_ho) in attempts:
                     items = fetch_expos_api(
                         js, jb, p_gb, jbun, jji,
@@ -348,18 +333,15 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                     tmp["dongNm"] = tmp.apply(lambda r: restore(r,"dongNm"), axis=1)
                     tmp["bldNm"]  = tmp.apply(lambda r: restore(r,"bldNm"),  axis=1)
 
-                    # hoNm 클라이언트 필터 (④ 전체조회 시)
+                    # ④ 전체조회 시 hoNm 클라이언트 필터
                     if not try_ho:
                         tmp = tmp[tmp.apply(
                             lambda r: match_ho(target_ho, r.get("hoNm","")), axis=1
                         )]
                     if tmp.empty: continue
 
-                    # ★ 동 클라이언트 필터:
-                    #   - dongNm 없이 조회(③④)한 경우에만 적용
-                    #   - 단, target_exact_jibun(106동의 실제 지번)이면 스킵
-                    #     → 이 지번 자체가 이미 106동이 보장된 지번이므로
-                    if target_dong and not try_dong and not is_exact_jibun:
+                    # ③④ dongNm 없이 조회한 경우 동 클라이언트 필터 (오매칭 방지)
+                    if target_dong and not try_dong:
                         m_pk = tmp[tmp["mgmBldrgstPk"].isin(target_pks)] \
                                if ("mgmBldrgstPk" in tmp.columns and target_pks) else pd.DataFrame()
                         m_name = tmp[tmp.apply(
@@ -375,7 +357,6 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                         df_expos["area"] = "0"; is_missing_area = True
                     found = True; break
                 if found: break
-
 
     # STEP 4: 층별개요 (platPlc 지번 우선)
     status.info("🪜 층별개요 수집 중...")
@@ -794,4 +775,5 @@ with tab2:
 
         st.markdown("---")
         st.caption("※ 국토교통부 건축HUB API 기반 / 법적 효력 없음 / 공식 증명서는 정부24·세움터에서 발급")
+
 
