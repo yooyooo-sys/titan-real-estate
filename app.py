@@ -167,7 +167,7 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
 
 # ==========================================
-# 🌟 [기능 2] 건축물대장 처리 함수 (V19: 실무 완성형 - 클로드 URL 반영 & 위반건축물 표시)
+# 🌟 [기능 2] 건축물대장 처리 함수 (V20: 전수조사 및 클로드 오류 수정)
 # ==========================================
 import re 
 import pandas as pd
@@ -214,12 +214,11 @@ def get_full_bjdong_code(search_term):
             active_regions = [row for row in rows if row["sido_cd"] != "" and row["sgg_cd"] != ""]
             if active_regions:
                 region_cd = active_regions[0]["region_cd"]
-                # 클로드 수정 반영: region_cd[5:10]으로 정확히 5자리 법정동코드 보장
                 return region_cd[:5], region_cd[5:10], active_regions[0]["locatadd_nm"]
         return None, None, None
     except: return None, None, None
 
-def fetch_molit_api(base_url, sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, status_text, desc_prefix, max_pages=30):
+def fetch_molit_api(base_url, sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, status_text, desc_prefix, max_pages=50):
     all_items = []
     for page in range(1, max_pages + 1):
         url = f"{base_url}?serviceKey={MOLIT_API_KEY}&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}&platGbCd={plat_gb_cd}&bun={bun}&ji={ji}&numOfRows=1000&pageNo={page}"
@@ -228,14 +227,16 @@ def fetch_molit_api(base_url, sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, status_tex
         
         success = False
         xml_data = {}
-        for _ in range(2):
+        # 서버 응답 지연을 대비한 재시도 로직 강화
+        for _ in range(3):
             try:
-                res = requests.get(url, timeout=10)
+                res = requests.get(url, timeout=15)
                 if res.text.strip().startswith('<'):
                     xml_data = xmltodict.parse(res.content)
                     if 'OpenAPI_ServiceResponse' not in xml_data:
-                        success = True; break
-            except: time.sleep(0.5)
+                        success = True
+                        break
+            except: time.sleep(1)
         if not success: break
         
         body = xml_data.get('response', {}).get('body', {})
@@ -252,10 +253,10 @@ def get_comprehensive_ledger(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong
     plat_candidates = ['3', '2', '0'] if plat_gb_cd != '1' else ['1']
     status_text = st.empty()
     
-    # 🌟 클로드 수정 반영: 실무에 맞는 정확한 최신 엔드포인트 적용
+    # URL 롤백 및 고정: 클로드가 제안한 잘못된 전유부 API(getBrExposPubuseAreaInfo)를 정규 API로 원복
     URL_BASIS = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrRecapTitleInfo" # 총괄표제부
     URL_TITLE = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo"     # 표제부
-    URL_EXPOS = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposPubuseAreaInfo" # 전유공용면적
+    URL_EXPOS = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposInfo"     # 전유부 (원복 완료)
     URL_FLOOR = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrFlrOulnInfo"     # 층별개요
 
     def match_dong(t_dong, d_val, b_val):
@@ -288,8 +289,6 @@ def get_comprehensive_ledger(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong
     target_pks = set()
     found_plat_gb = plat_gb_cd
     title_records = []
-    
-    # 클로드 버그 수정 반영: restore 함수의 scope 문제를 해결하기 위해 전역 딕셔너리로 선언
     pk_map = {}
     
     def restore(r, k):
@@ -300,7 +299,7 @@ def get_comprehensive_ledger(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong
         return v
 
     for p_gb in plat_candidates:
-        items = fetch_molit_api(URL_TITLE, sgg_cd, bjdong_cd, p_gb, bun, ji, status_text, f"[지번코드 {p_gb}] 표제부 스캔", 5)
+        items = fetch_molit_api(URL_TITLE, sgg_cd, bjdong_cd, p_gb, bun, ji, status_text, f"[지번코드 {p_gb}] 표제부 스캔", max_pages=10)
         if not items: continue
         
         for item in items:
@@ -325,22 +324,22 @@ def get_comprehensive_ledger(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong
             found_plat_gb = p_gb
             break
 
-    # 2️⃣ 총괄표제부 탐색 (올바른 엔드포인트 적용)
+    # 2️⃣ 총괄표제부 탐색
     df_basis = pd.DataFrame()
     for p_gb in ['0', '2', '3', '1']: 
-        basis_items = fetch_molit_api(URL_BASIS, sgg_cd, bjdong_cd, p_gb, bun, ji, status_text, f"[지번코드 {p_gb}] 총괄표제부 탐색", 2)
+        basis_items = fetch_molit_api(URL_BASIS, sgg_cd, bjdong_cd, p_gb, bun, ji, status_text, f"[지번코드 {p_gb}] 총괄표제부 탐색", max_pages=2)
         valid_basis = [b for b in basis_items if float(str(b.get('totArea', '0')).replace(',', '') or 0) > 0.0]
         if valid_basis:
             df_basis = pd.DataFrame(valid_basis)
             break 
 
-    # 3️⃣ 전유부 탐색 (클로드의 필터링 오류 수정 및 호수 완벽 복원)
+    # 3️⃣ 전유부 탐색 (데이터 누락 방지를 위해 max_pages=50 설정)
     df_expos = pd.DataFrame()
     is_missing_area = False
     
     if target_ho:
         for p_gb in plat_candidates:
-            expos_items = fetch_molit_api(URL_EXPOS, sgg_cd, bjdong_cd, p_gb, bun, ji, status_text, f"[지번코드 {p_gb}] 전유부 정밀 추적", 30)
+            expos_items = fetch_molit_api(URL_EXPOS, sgg_cd, bjdong_cd, p_gb, bun, ji, status_text, f"[지번코드 {p_gb}] 전유부 정밀 추적", max_pages=50)
             if not expos_items: continue
             
             temp_df = pd.DataFrame(expos_items)
@@ -359,11 +358,11 @@ def get_comprehensive_ledger(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong
                     is_missing_area = True
                 break
 
-    # 4️⃣ 층별개요 탐색 
+    # 4️⃣ 층별개요 탐색 (데이터 누락 방지를 위해 max_pages=50 설정)
     df_floor = pd.DataFrame()
     if target_dong:
         for p_gb in plat_candidates:
-            floor_items = fetch_molit_api(URL_FLOOR, sgg_cd, bjdong_cd, p_gb, bun, ji, status_text, f"[지번코드 {p_gb}] 층별현황 추적", 10)
+            floor_items = fetch_molit_api(URL_FLOOR, sgg_cd, bjdong_cd, p_gb, bun, ji, status_text, f"[지번코드 {p_gb}] 층별현황 추적", max_pages=50)
             if not floor_items: continue
             
             temp_floor = pd.DataFrame(floor_items)
@@ -376,6 +375,10 @@ def get_comprehensive_ledger(sgg_cd, bjdong_cd, plat_gb_cd, bun, ji, target_dong
                 
             if not temp_floor.empty:
                 df_floor = temp_floor
+                # 층별 정렬 로직 추가
+                if 'flrNo' in df_floor.columns:
+                    df_floor['flrNo_num'] = pd.to_numeric(df_floor['flrNo'], errors='coerce').fillna(0)
+                    df_floor = df_floor.sort_values(by='flrNo_num', ascending=False).drop(columns=['flrNo_num'])
                 break 
 
     status_text.empty()
@@ -389,7 +392,7 @@ st.title("🏢 부동산 올인원 실거래가 & 건축물대장 봇")
 
 tab1, tab2 = st.tabs(["💰 실거래가 조회", "📋 종합 건축물대장 (단지/동/호수/층별)"])
 
-# ----------------- [탭 1] 실거래가 (생략: 기존 코드와 동일) -----------------
+# ----------------- [탭 1] 실거래가 (생략: 기존 유지) -----------------
 with tab1:
     current_date = pd.Timestamp.now()
     current_month_str = current_date.strftime('%Y%m') 
@@ -435,9 +438,9 @@ with tab2:
         with col1:
             address_input = st.text_input("조회할 텍스트 주소 (필수)", placeholder="예: 상도동 450")
         with col2:
-            dong_input = st.text_input("동 (선택)", placeholder="예: 103")
+            dong_input = st.text_input("동 (선택)", placeholder="예: 105")
         with col3:
-            ho_input = st.text_input("호수 (선택)", placeholder="예: 302")
+            ho_input = st.text_input("호수 (선택)", placeholder="예: 304")
             
         bld_submitted = st.form_submit_button("🔍 종합 대장 데이터 열람")
         
@@ -461,15 +464,16 @@ with tab2:
                     def safe_val(val, default='-'):
                         return default if pd.isna(val) or str(val).strip() in ['None', '', 'nan'] else str(val).strip()
 
-                    # 🚨 위반건축물 감지 로직 (총괄표제부 또는 표제부에서 확인)
+                    # 🚨 위반건축물 감지 로직 (우선순위: 표제부 -> 총괄표제부)
                     is_violating = False
-                    if not df_basis.empty and str(df_basis.iloc[0].get('violBldYn', '0')) == '1':
-                        is_violating = True
-                    elif not df_title.empty and str(df_title.iloc[0].get('violBldYn', '0')) == '1':
+                    if not df_title.empty:
+                        if '1' in df_title['violBldYn'].astype(str).values:
+                            is_violating = True
+                    elif not df_basis.empty and str(df_basis.iloc[0].get('violBldYn', '0')) == '1':
                         is_violating = True
 
                     if is_violating:
-                        st.error("🚨 **[주의] 위반건축물로 등록된 대장입니다!** 해당 건축물은 건축법 위반 사항이 존재하므로 중개 시 반드시 정부24 원본 서류(건축물대장)를 확인하여 위반 내용(불법 증축, 무단 용도변경 등)을 고객에게 설명해야 합니다.")
+                        st.error("🚨 **[주의] 위반건축물로 등록된 대장입니다!** 해당 건축물은 건축법 위반 사항이 존재하므로 중개 시 반드시 정부24 원본 서류를 확인하여 위반 내용을 확인해야 합니다.")
 
                     # 🟩 [섹션 1] 총괄표제부
                     if not df_basis.empty:
@@ -488,7 +492,7 @@ with tab2:
                         """, unsafe_allow_html=True)
                         st.divider()
 
-                    # 🟩 [섹션 2] 전유부 (실종되었던 호수 정보 완벽 복구)
+                    # 🟩 [섹션 2] 전유부 
                     if ho_input and not df_expos.empty:
                         st.markdown(f"### 🏠 [전유부] 해당 호수 상세")
                         unique_pks = df_expos['mgmBldrgstPk'].unique() if 'mgmBldrgstPk' in df_expos.columns else [None]
