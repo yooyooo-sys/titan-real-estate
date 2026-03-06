@@ -860,8 +860,8 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 #  STREAMLIT UI
 # ────────────────────────────────────────────
 
-st.set_page_config(page_title="부동산 올인원 봇", layout="wide")
-st.title("🏢 부동산 올인원 실거래가 & 건축물대장 봇")
+st.set_page_config(page_title="타이탄부동산 봇", layout="wide")
+st.title("🏢 부동산 실거래가 & 건축물대장 봇")
 
 tab1, tab2 = st.tabs(["💰 실거래가 조회", "📋 건축물대장 조회"])
 
