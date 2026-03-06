@@ -24,637 +24,6 @@ API_PATHS = {
     "토지_매매": "RTMSDataSvcLandTrade/getRTMSDataSvcLandTrade",
 }
 
-BASE_URL = "http://apis.data.go.kr/1613000/BldRgstHubService"
-URL_RECAP = f"{BASE_URL}/getBrRecapTitleInfo"
-URL_TITLE = f"{BASE_URL}/getBrTitleInfo"
-URL_EXPOS = f"{BASE_URL}/getBrExposPubuseAreaInfo"
-URL_FLOOR = f"{BASE_URL}/getBrFlrOulnInfo"
-URL_ATCH = f"{BASE_URL}/getBrAtchJibunInfo"
-
-EXPOS_MATCH = "MATCH"
-EXPOS_CONFLICT = "CONFLICT"
-EXPOS_NONE = "NONE"
-
-
-def safe_val(val, default="-"):
-    if val is None:
-        return default
-    s = str(val).strip()
-    return default if s in ("", "None", "nan") else s
-
-
-def fmt_date(d):
-    s = safe_val(d)
-    return f"{s[:4]}.{s[4:6]}.{s[6:]}" if len(s) == 8 and s.isdigit() else s
-
-
-def to_float(v):
-    try:
-        return float(str(v).replace(",", "").strip())
-    except:
-        return 0.0
-
-
-def parse_address(addr):
-    parts = addr.strip().split()
-    if not parts:
-        return None, None, None, None
-    plat_gb = "0"
-    if "산" in parts:
-        plat_gb = "1"
-        parts.remove("산")
-    bun, ji = "0000", "0000"
-    last = parts[-1]
-    if any(c.isdigit() for c in last):
-        if "-" in last:
-            b, j = last.split("-", 1)
-            bun = "".join(filter(str.isdigit, b)).zfill(4) or "0000"
-            ji = "".join(filter(str.isdigit, j)).zfill(4) or "0000"
-        else:
-            bun = "".join(filter(str.isdigit, last)).zfill(4) or "0000"
-        parts.pop()
-    return " ".join(parts), plat_gb, bun, ji
-
-
-def parse_platplc(platplc):
-    s = str(platplc).strip()
-    if not s or s in ("None", "nan", "-"):
-        return None, None, None
-    s = re.sub(r"[번지]+\s*$", "", s).strip()
-    pgb = "1" if re.search(r"\s산\s*\d", s) else "0"
-    m = re.search(r"(\d+)(?:-(\d+))?\s*$", s)
-    if not m:
-        return None, None, None
-    bun = str(m.group(1)).zfill(4)
-    ji = str(m.group(2)).zfill(4) if m.group(2) else "0000"
-    return pgb, bun, ji
-
-
-def normalize_dong(v):
-    return re.sub(r"[^A-Za-z0-9가-힣]", "", str(v)).replace("제", "").upper()
-
-
-def normalize_ho(v):
-    return re.sub(r"[^A-Za-z0-9가-힣]", "", str(v)).replace("제", "").upper()
-
-
-def get_bjdong_code(search_term):
-    url = (
-        "https://apis.data.go.kr/1741000/StanReginCd/getStanReginCdList"
-        f"?serviceKey={DONG_API_KEY}&pageNo=1&numOfRows=10&type=json&locatadd_nm={search_term}"
-    )
-    try:
-        data = requests.get(url, timeout=10).json()
-        if data.get("StanReginCd"):
-            rows = data["StanReginCd"][1]["row"]
-            active = [r for r in rows if r["sido_cd"] != "" and r["sgg_cd"] != ""]
-            if active:
-                rc = active[0]["region_cd"]
-                return rc[:5], rc[5:10], active[0]["locatadd_nm"]
-    except:
-        pass
-    return None, None, None
-
-
-def match_dong(target, dong_nm, bld_nm):
-    if not target:
-        return True
-    t = normalize_dong(target).replace("동", "")
-    d = normalize_dong(dong_nm).replace("동", "")
-    b = normalize_dong(bld_nm)
-    if not d and not b:
-        return False
-    if t and d and t == d:
-        return True
-    if t and f"{t}동" in b:
-        return True
-    nums = re.findall(r"\d+", t)
-    if nums:
-        n = nums[-1]
-        short = str(int(n) % 100)
-        if d in (n, short, f"주{n}", f"주{short}"):
-            return True
-        if f"{n}동" in b:
-            return True
-    return False
-
-
-def strict_match_dong(target, dong_nm):
-    if not target:
-        return True
-    t = normalize_dong(target).replace("동", "")
-    d = normalize_dong(dong_nm).replace("동", "")
-    if not d:
-        return False
-    tn = re.findall(r"\d+", t)
-    dn = re.findall(r"\d+", d)
-    if tn and dn:
-        return tn[-1] == dn[-1]
-    return t == d
-
-
-def match_ho(target, ho_nm):
-    if not target:
-        return True
-    t = normalize_ho(target).replace("호", "")
-    h = normalize_ho(ho_nm).replace("호", "")
-    if t == h:
-        return True
-    tn = re.findall(r"\d+", t)
-    hn = re.findall(r"\d+", h)
-    if tn and hn:
-        try:
-            return int(tn[-1]) == int(hn[-1])
-        except:
-            return tn[-1] == hn[-1]
-    return False
-
-
-def fetch_bld_api(endpoint, sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=50):
-    all_items = []
-    for page in range(1, max_pages + 1):
-        url = (
-            f"{endpoint}?serviceKey={MOLIT_API_KEY}"
-            f"&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}"
-            f"&platGbCd={plat_gb}&bun={bun}&ji={ji}"
-            f"&numOfRows=1000&pageNo={page}"
-        )
-        xml_data = {}
-        success = False
-        for _ in range(3):
-            try:
-                res = requests.get(url, timeout=15)
-                if res.text.strip().startswith("<"):
-                    xml_data = xmltodict.parse(res.content)
-                    if "OpenAPI_ServiceResponse" not in xml_data:
-                        success = True
-                        break
-            except:
-                time.sleep(0.5)
-        if not success:
-            break
-        body = xml_data.get("response", {}).get("body", {})
-        items = body.get("items", {}).get("item", []) if body.get("items") else []
-        if isinstance(items, dict):
-            items = [items]
-        if not items:
-            break
-        all_items.extend(items)
-        if page * 1000 >= int(body.get("totalCount", 0)):
-            break
-    return all_items
-
-
-def get_all_jibun(sgg_cd, bjdong_cd, plat_gb, bun, ji):
-    result = [(sgg_cd, bjdong_cd, plat_gb, bun, ji)]
-    items = fetch_bld_api(URL_ATCH, sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=5)
-    for item in items:
-        c = (
-            str(item.get("atchSigunguCd", sgg_cd)).zfill(5),
-            str(item.get("atchBjdongCd", bjdong_cd)).zfill(5),
-            str(item.get("atchPlatGbCd", "0")),
-            str(item.get("atchBun", "0")).zfill(4),
-            str(item.get("atchJi", "0")).zfill(4),
-        )
-        if c not in result:
-            result.append(c)
-    return result
-
-
-def render_expos_card(grp, is_missing_area):
-    if "exposPubuseGbCdNm" in grp.columns:
-        df_j = grp[grp["exposPubuseGbCdNm"].astype(str).str.contains("전유", na=False)]
-        df_g = grp[grp["exposPubuseGbCdNm"].astype(str).str.contains("공용", na=False)]
-    else:
-        df_j, df_g = grp, pd.DataFrame()
-
-    if df_j.empty:
-        df_j = grp
-
-    j_area = sum(to_float(x) for x in df_j["area"].tolist()) if (not is_missing_area and "area" in df_j.columns) else 0.0
-    g_area = sum(to_float(x) for x in df_g["area"].tolist()) if (not is_missing_area and not df_g.empty and "area" in df_g.columns) else 0.0
-    t_area = j_area + g_area
-    mr = df_j.iloc[0]
-
-    full_nm = " ".join(filter(None, [
-        safe_val(mr.get("bldNm"), ""),
-        safe_val(mr.get("dongNm"), ""),
-        safe_val(mr.get("hoNm"), ""),
-    ]))
-
-    with st.container(border=True):
-        st.markdown(f"#### {full_nm}")
-        st.warning("🔒 소유자 정보는 개인정보 보호로 제공되지 않습니다.")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown(f"""
-| 항목 | 내용 |
-|---|---|
-| 주용도 | {safe_val(mr.get('mainPurpsCdNm'))} |
-| 기타용도 | {safe_val(mr.get('etcPurps'))} |
-| 구조 | {safe_val(mr.get('strctCdNm'))} |
-| 해당 층 | {safe_val(mr.get('flrNoNm'))} |
-            """)
-        with c2:
-            j_str = "⚠️ API 미제공" if is_missing_area else f"**{j_area:,.2f} ㎡**"
-            g_str = "⚠️ API 미제공" if is_missing_area else f"{g_area:,.2f} ㎡"
-            t_str = "확인 불가" if is_missing_area else f"**{t_area:,.2f} ㎡**"
-            p_str = "" if is_missing_area else f"약 {t_area / 3.3058:.1f} 평"
-            st.markdown(f"""
-| 면적 구분 | 면적 |
-|---|---|
-| 전용면적 | {j_str} |
-| 공용면적 | {g_str} |
-| 계약면적(합계) | {t_str} |
-| 평형 환산 | {p_str} |
-            """)
-
-
-def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", target_ho=""):
-    status = st.empty()
-    plat_cands = ["3", "2", "0"] if plat_gb != "1" else ["1"]
-    pk_map = {}
-
-    def restore(row, key):
-        v = row.get(key, "")
-        if not v or str(v).strip() in ("", "None", "nan"):
-            pk = row.get("mgmBldrgstPk")
-            if pk and pk in pk_map:
-                return pk_map[pk].get("dong" if key == "dongNm" else "bld", "")
-        return v
-
-    status.info("🗺️ 단지 필지 구성 파악 중...")
-    all_jibun = get_all_jibun(sgg_cd, bjdong_cd, plat_gb, bun, ji)
-
-    status.info("📋 표제부 수집 중...")
-    raw_titles = []
-    for js, jb, jp, jbun, jji in all_jibun:
-        for p_gb in [jp] + [x for x in plat_cands if x != jp]:
-            items = fetch_bld_api(URL_TITLE, js, jb, p_gb, jbun, jji, max_pages=10)
-            valid = [x for x in items if to_float(x.get("totArea", "0")) > 0]
-            if valid:
-                raw_titles.extend(valid)
-                break
-
-    seen, unique_titles = set(), []
-    for item in raw_titles:
-        pk = item.get("mgmBldrgstPk")
-        if pk not in seen:
-            seen.add(pk)
-            unique_titles.append(item)
-
-    df_titles = pd.DataFrame(unique_titles) if unique_titles else pd.DataFrame()
-
-    for item in unique_titles:
-        pk = item.get("mgmBldrgstPk")
-        if pk:
-            pk_map[pk] = {
-                "dong": item.get("dongNm", ""),
-                "bld": item.get("bldNm", "")
-            }
-
-    target_pks = set()
-    if target_dong and not df_titles.empty:
-        for _, row in df_titles.iterrows():
-            if match_dong(target_dong, row.get("dongNm", ""), row.get("bldNm", "")):
-                pk = row.get("mgmBldrgstPk")
-                if pk:
-                    target_pks.add(pk)
-
-    target_exact_jibun = set()
-    if not df_titles.empty:
-        for _, row in df_titles.iterrows():
-            if target_dong and not match_dong(target_dong, row.get("dongNm", ""), row.get("bldNm", "")):
-                continue
-            for plc_field in ["platPlc", "newPlatPlc"]:
-                pgb, bn, jn = parse_platplc(row.get(plc_field, ""))
-                if bn:
-                    target_exact_jibun.add((
-                        str(sgg_cd).zfill(5),
-                        str(bjdong_cd).zfill(5),
-                        str(pgb),
-                        str(bn).zfill(4),
-                        str(jn).zfill(4),
-                    ))
-                    break
-
-    status.info("🏢 총괄표제부 수집 중...")
-    df_recap = pd.DataFrame()
-    for p_gb in ["0", "2", "3", "1"]:
-        items = fetch_bld_api(URL_RECAP, sgg_cd, bjdong_cd, p_gb, bun, ji, max_pages=2)
-        valid = [x for x in items if to_float(x.get("totArea", "0")) > 0]
-        if valid:
-            df_recap = pd.DataFrame(valid)
-            break
-
-    status.info("🏠 전유공용면적 수집 중...")
-    df_expos = pd.DataFrame()
-    df_expos_conflict = pd.DataFrame()
-    expos_status = EXPOS_NONE
-    is_missing_area = False
-    expos_debug_log = []
-
-    def row_jibun_key(r):
-        pgb = safe_val(r.get("platGbCd"), "")
-        bn = safe_val(r.get("bun"), "")
-        jn = safe_val(r.get("ji"), "")
-        if bn in ("", "-"):
-            p2, b2, j2 = parse_platplc(r.get("platPlc", ""))
-            if b2:
-                pgb, bn, jn = p2, b2, j2
-        if bn in ("", "-"):
-            return None
-        return (
-            str(sgg_cd).zfill(5),
-            str(bjdong_cd).zfill(5),
-            str(pgb if pgb not in ("", "-") else "0"),
-            str(bn).zfill(4),
-            str(jn if jn not in ("", "-") else "0000").zfill(4),
-        )
-
-    def analyze_expos(df_src, source_label):
-        nonlocal is_missing_area
-
-        if df_src is None or df_src.empty:
-            return pd.DataFrame(), pd.DataFrame()
-
-        df = df_src.copy()
-        df["dongNm"] = df.apply(lambda r: restore(r, "dongNm"), axis=1)
-        df["bldNm"] = df.apply(lambda r: restore(r, "bldNm"), axis=1)
-        df["_jibun_key"] = df.apply(row_jibun_key, axis=1)
-
-        df_ho = df[df.apply(lambda r: match_ho(target_ho, r.get("hoNm", "")), axis=1)]
-        expos_debug_log.append({
-            "단계": f"{source_label} hoNm필터",
-            "건수": len(df_ho),
-            "hoNm샘플": df_ho["hoNm"].tolist()[:5] if not df_ho.empty else [],
-            "dongNm샘플": df_ho["dongNm"].tolist()[:5] if not df_ho.empty else [],
-            "jibun샘플": [str(x) for x in df_ho["_jibun_key"].tolist()[:5]] if not df_ho.empty else [],
-        })
-
-        if df_ho.empty:
-            return pd.DataFrame(), pd.DataFrame()
-
-        if not target_dong:
-            df_ho = df_ho.drop(columns=["_jibun_key"], errors="ignore")
-            if "area" not in df_ho.columns:
-                df_ho["area"] = "0"
-                is_missing_area = True
-            return df_ho, pd.DataFrame()
-
-        df_strict = df_ho[df_ho.apply(lambda r: strict_match_dong(target_dong, r.get("dongNm", "")), axis=1)]
-        expos_debug_log.append({
-            "단계": f"{source_label} strict_dong필터",
-            "건수": len(df_strict),
-            "dongNm샘플": df_strict["dongNm"].tolist()[:5] if not df_strict.empty else [],
-        })
-
-        if not df_strict.empty:
-            df_strict = df_strict.drop(columns=["_jibun_key"], errors="ignore")
-            if "area" not in df_strict.columns:
-                df_strict["area"] = "0"
-                is_missing_area = True
-            return df_strict, pd.DataFrame()
-
-        df_exact = df_ho[df_ho["_jibun_key"].isin(target_exact_jibun)] if target_exact_jibun else pd.DataFrame()
-        expos_debug_log.append({
-            "단계": f"{source_label} exact_jibun필터",
-            "건수": len(df_exact),
-            "exact_jibun목록": [str(x) for x in list(target_exact_jibun)[:5]],
-            "dongNm샘플": df_exact["dongNm"].tolist()[:5] if not df_exact.empty else [],
-            "jibun샘플": [str(x) for x in df_exact["_jibun_key"].tolist()[:5]] if not df_exact.empty else [],
-        })
-
-        if not df_exact.empty:
-            expos_debug_log.append({
-                "판정": "CONFLICT",
-                "이유": f"호수/지번 일치, 동명 불일치 (입력:{target_dong}동 vs API:{df_exact['dongNm'].tolist()[0]})"
-            })
-            df_exact = df_exact.drop(columns=["_jibun_key"], errors="ignore")
-            if "area" not in df_exact.columns:
-                df_exact["area"] = "0"
-                is_missing_area = True
-            return pd.DataFrame(), df_exact
-
-        df_dong = df_ho[df_ho.apply(
-            lambda r: match_dong(target_dong, r.get("dongNm", ""), r.get("bldNm", "")),
-            axis=1
-        )]
-        expos_debug_log.append({
-            "단계": f"{source_label} dong필터(fallback)",
-            "건수": len(df_dong),
-        })
-
-        if not df_dong.empty:
-            df_dong = df_dong.drop(columns=["_jibun_key"], errors="ignore")
-            if "area" not in df_dong.columns:
-                df_dong["area"] = "0"
-                is_missing_area = True
-            return df_dong, pd.DataFrame()
-
-        return pd.DataFrame(), pd.DataFrame()
-
-    if target_ho:
-        found = False
-
-        if target_exact_jibun:
-            for js, jb, jp, jbun, jji in list(target_exact_jibun):
-                if found:
-                    break
-                for p_gb in [jp] + [x for x in ["2", "3", "0", "1"] if x != jp]:
-                    items = fetch_bld_api(URL_EXPOS, js, jb, p_gb, jbun, jji, max_pages=20)
-                    if not items:
-                        continue
-                    expos_debug_log.append({
-                        "방식": "exact_jibun 직접조회",
-                        "지번": f"bun={jbun} ji={jji} platGb={p_gb}",
-                        "수집건수": len(items),
-                        "hoNm샘플": [x.get("hoNm", "") for x in items[:5]],
-                    })
-                    m_df, c_df = analyze_expos(pd.DataFrame(items), f"exact_jibun {jbun}-{jji} platGb={p_gb}")
-                    if not m_df.empty:
-                        df_expos = m_df
-                        expos_status = EXPOS_MATCH
-                        found = True
-                        break
-                    if not c_df.empty:
-                        df_expos_conflict = c_df
-                        expos_status = EXPOS_CONFLICT
-                        found = True
-                        break
-
-        if not found:
-            expos_debug_log.append({"전환": "exact_jibun 결과 없음 → 전체 수집"})
-            all_raw = []
-            for js, jb, jp, jbun, jji in all_jibun:
-                for p_gb in [jp] + [x for x in ["2", "3", "0", "1"] if x != jp]:
-                    items = fetch_bld_api(URL_EXPOS, js, jb, p_gb, jbun, jji, max_pages=20)
-                    if items:
-                        expos_debug_log.append({
-                            "방식": "전체수집",
-                            "지번": f"bun={jbun} ji={jji} platGb={p_gb}",
-                            "수집건수": len(items),
-                        })
-                        all_raw.extend(items)
-
-            if all_raw:
-                seen_e, unique_raw = set(), []
-                for item in all_raw:
-                    key = (
-                        item.get("mgmBldrgstPk"),
-                        item.get("hoNm"),
-                        item.get("exposPubuseGbCdNm"),
-                        item.get("area"),
-                    )
-                    if key not in seen_e:
-                        seen_e.add(key)
-                        unique_raw.append(item)
-
-                expos_debug_log.append({"전체수집(중복제거)": len(unique_raw)})
-                m_df, c_df = analyze_expos(pd.DataFrame(unique_raw), "전체수집")
-                if not m_df.empty:
-                    df_expos = m_df
-                    expos_status = EXPOS_MATCH
-                elif not c_df.empty:
-                    df_expos_conflict = c_df
-                    expos_status = EXPOS_CONFLICT
-                else:
-                    expos_debug_log.append({"최종결과": "NONE — 동/호 일치 없음"})
-
-    status.info("🪜 층별개요 수집 중...")
-    df_floor = pd.DataFrame()
-    floor_order = sorted(all_jibun, key=lambda j: 0 if j in target_exact_jibun else 1)
-
-    for js, jb, jp, jbun, jji in floor_order:
-        if not df_floor.empty:
-            break
-        for p_gb in [jp] + [x for x in plat_cands if x != jp]:
-            items = fetch_bld_api(URL_FLOOR, js, jb, p_gb, jbun, jji, max_pages=20)
-            if not items:
-                continue
-            tmp = pd.DataFrame(items)
-            tmp["dongNm"] = tmp.apply(lambda r: restore(r, "dongNm"), axis=1)
-            tmp["bldNm"] = tmp.apply(lambda r: restore(r, "bldNm"), axis=1)
-
-            if target_pks and "mgmBldrgstPk" in tmp.columns:
-                filtered = tmp[tmp["mgmBldrgstPk"].isin(target_pks)]
-            elif target_dong:
-                filtered = tmp[tmp.apply(
-                    lambda r: match_dong(target_dong, r.get("dongNm", ""), r.get("bldNm", "")),
-                    axis=1
-                )]
-            else:
-                filtered = tmp
-
-            if not filtered.empty:
-                filtered = filtered.copy()
-                filtered["_n"] = pd.to_numeric(filtered.get("flrNo", pd.Series(dtype=str)), errors="coerce").fillna(-99)
-                df_floor = filtered.sort_values("_n", ascending=False).drop(columns=["_n"])
-                break
-
-    status.empty()
-
-    return (
-        df_recap,
-        df_titles,
-        df_expos,
-        df_expos_conflict,
-        expos_status,
-        df_floor,
-        is_missing_area,
-        len(all_jibun),
-        target_exact_jibun,
-        expos_debug_log
-    )
-
-
-def get_sigungu_code(sigungu_name, dong_name):
-    search_term = dong_name.strip() if dong_name.strip() else sigungu_name.strip()
-    url = (
-        "https://apis.data.go.kr/1741000/StanReginCd/getStanReginCdList"
-        f"?serviceKey={DONG_API_KEY}&pageNo=1&numOfRows=500&type=json&locatadd_nm={search_term}"
-    )
-    try:
-        res = requests.get(url, timeout=10)
-        if not res.text.strip():
-            return None, None
-        data = res.json()
-        if data.get("StanReginCd"):
-            rows = data["StanReginCd"][1]["row"]
-            active = [r for r in rows if r["sido_cd"] != "" and r["sgg_cd"] != ""]
-            for region in active:
-                if sigungu_name.strip() in region["locatadd_nm"]:
-                    return region["region_cd"][:5], region["locatadd_nm"]
-    except:
-        pass
-    return None, None
-
-
-def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_type, trans_type):
-    dict_key = f"{prop_type}_{trans_type}"
-    if dict_key not in API_PATHS:
-        st.warning(f"'{prop_type} {trans_type}' 조합 미지원")
-        return pd.DataFrame()
-
-    base_url = f"http://apis.data.go.kr/1613000/{API_PATHS[dict_key]}"
-    try:
-        month_list = pd.date_range(
-            pd.to_datetime(start_month, format="%Y%m"),
-            pd.to_datetime(end_month, format="%Y%m"),
-            freq="MS"
-        ).strftime("%Y%m").tolist()
-    except:
-        st.error("조회 기간 형식 오류 (YYYYMM)")
-        return pd.DataFrame()
-
-    all_data = []
-    pb = st.progress(0)
-    status_text = st.empty()
-
-    for i, ym in enumerate(month_list):
-        status_text.text(f"⏳ {ym} 조회 중... ({i + 1}/{len(month_list)})")
-        pb.progress((i + 1) / len(month_list))
-        url = (
-            f"{base_url}?serviceKey={MOLIT_API_KEY}"
-            f"&pageNo=1&numOfRows=1000&LAWD_CD={sigungu_code}&DEAL_YMD={ym}"
-        )
-        try:
-            res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-            if not res.text.strip().startswith("<"):
-                break
-            xml_data = xmltodict.parse(res.content)
-            if "OpenAPI_ServiceResponse" in xml_data:
-                break
-            rc = xml_data.get("response", {}).get("header", {}).get("result아래는 **설명 문장 하나도 섞지 않은 순수 파이썬 전체코드**입니다.  
-그대로 `app.py`에 통째로 넣으면 됩니다. 건축HUB의 `getBrTitleInfo`, `getBrAtchJibunInfo`, `getBrExposPubuseAreaInfo`, `getBrFlrOulnInfo`, `getBrRecapTitleInfo` 구조를 기준으로 짰습니다. [file:59][file:16][file:28]
-
-```python
-import streamlit as st
-import pandas as pd
-import requests
-import xmltodict
-import re
-import time
-from io import BytesIO
-
-DONG_API_KEY = "z92CW%2FlIVtpHa46lUJJ5WCMBVQEu8C8YQS9sY2nFsG3nKq0S2J4W997c7ENV6x02Rsnf6RKJcY1hc8cLc2OlxQ%3D%3D"
-MOLIT_API_KEY = "z92CW%2FlIVtpHa46lUJJ5WCMBVQEu8C8YQS9sY2nFsG3nKq0S2J4W997c7ENV6x02Rsnf6RKJcY1hc8cLc2OlxQ%3D%3D"
-
-API_PATHS = {
-    "아파트_매매": "RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev",
-    "아파트_전월세": "RTMSDataSvcAptRent/getRTMSDataSvcAptRent",
-    "아파트분양권_매매": "RTMSDataSvcSilvTrade/getRTMSDataSvcSilvTrade",
-    "오피스텔_매매": "RTMSDataSvcOffiTrade/getRTMSDataSvcOffiTrade",
-    "오피스텔_전월세": "RTMSDataSvcOffiRent/getRTMSDataSvcOffiRent",
-    "연립/다세대_매매": "RTMSDataSvcRHTrade/getRTMSDataSvcRHTrade",
-    "연립/다세대_전월세": "RTMSDataSvcRHRent/getRTMSDataSvcRHRent",
-    "단독/다가구_매매": "RTMSDataSvcSHTrade/getRTMSDataSvcSHTrade",
-    "단독/다가구_전월세": "RTMSDataSvcSHRent/getRTMSDataSvcSHRent",
-    "상업/업무용_매매": "RTMSDataSvcNrgTrade/getRTMSDataSvcNrgTrade",
-    "공장 및 창고_매매": "RTMSDataSvcInduTrade/getRTMSDataSvcInduTrade",
-    "토지_매매": "RTMSDataSvcLandTrade/getRTMSDataSvcLandTrade",
-}
-
 BASE_BLD = "http://apis.data.go.kr/1613000/BldRgstHubService"
 URL_RECAP = f"{BASE_BLD}/getBrRecapTitleInfo"
 URL_TITLE = f"{BASE_BLD}/getBrTitleInfo"
@@ -743,11 +112,11 @@ def get_bjdong_code(search_term):
     try:
         data = requests.get(url, timeout=10).json()
         if data.get("StanReginCd"):
-            rows = data["StanReginCd"]["row"][4]
+            rows = data["StanReginCd"][1]["row"]
             active = [r for r in rows if r["sido_cd"] != "" and r["sgg_cd"] != ""]
             if active:
-                rc = active["region_cd"]
-                return rc[:5], rc[5:10], active["locatadd_nm"]
+                rc = active[0]["region_cd"]
+                return rc[:5], rc[5:10], active[0]["locatadd_nm"]
     except:
         pass
     return None, None, None
@@ -765,7 +134,7 @@ def get_sigungu_code(sigungu_name, dong_name):
             return None, None
         data = res.json()
         if data.get("StanReginCd"):
-            rows = data["StanReginCd"]["row"][4]
+            rows = data["StanReginCd"][1]["row"]
             active = [r for r in rows if r["sido_cd"] != "" and r["sgg_cd"] != ""]
             for region in active:
                 if sigungu_name.strip() in region["locatadd_nm"]:
@@ -921,7 +290,7 @@ def render_expos_card(grp, is_missing_area):
     j_area = sum(to_float(x) for x in df_j["area"].tolist()) if (not is_missing_area and "area" in df_j.columns) else 0.0
     g_area = sum(to_float(x) for x in df_g["area"].tolist()) if (not is_missing_area and not df_g.empty and "area" in df_g.columns) else 0.0
     t_area = j_area + g_area
-    mr = df_j.iloc
+    mr = df_j.iloc[0]
 
     full_nm = " ".join(filter(None, [
         safe_val(mr.get("bldNm"), ""),
@@ -998,7 +367,10 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
     for item in unique_titles:
         pk = item.get("mgmBldrgstPk")
         if pk:
-            pk_map[pk] = {"dong": item.get("dongNm", ""), "bld": item.get("bldNm", "")}
+            pk_map[pk] = {
+                "dong": item.get("dongNm", ""),
+                "bld": item.get("bldNm", "")
+            }
 
     target_pks = set()
     if target_dong and not df_titles.empty:
@@ -1162,6 +534,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
             for (js, jb, jp, jbun, jji) in list(target_exact_jibun):
                 if found:
                     break
+
                 for p_gb in [jp] + [x for x in ["2", "3", "0", "1"] if x != jp]:
                     items = fetch_bld_api(URL_EXPOS, js, jb, p_gb, jbun, jji, max_pages=20)
                     if not items:
@@ -1206,6 +579,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
             if all_raw:
                 seen_e = set()
                 unique_raw = []
+
                 for item in all_raw:
                     key = (
                         item.get("mgmBldrgstPk"),
@@ -1263,7 +637,10 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
 
             if not filtered.empty:
                 filtered = filtered.copy()
-                filtered["_n"] = pd.to_numeric(filtered.get("flrNo", pd.Series(dtype=str)), errors="coerce").fillna(-99)
+                filtered["_n"] = pd.to_numeric(
+                    filtered["flrNo"] if "flrNo" in filtered.columns else pd.Series([None] * len(filtered)),
+                    errors="coerce"
+                ).fillna(-99)
                 df_floor = filtered.sort_values("_n", ascending=False).drop(columns=["_n"])
                 break
 
@@ -1306,8 +683,8 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
     st_txt = st.empty()
 
     for i, ym in enumerate(month_list):
-        st_txt.text(f"⏳ {ym} 조회 중... ({i+1}/{len(month_list)})")
-        pb.progress((i+1)/len(month_list))
+        st_txt.text(f"⏳ {ym} 조회 중... ({i + 1}/{len(month_list)})")
+        pb.progress((i + 1) / len(month_list))
 
         url = (
             f"{base_url}?serviceKey={MOLIT_API_KEY}"
@@ -1348,30 +725,62 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
 
     df = pd.concat(all_data, ignore_index=True)
 
-    if dong_name.strip():
-        df = df[df["umdNm"].str.contains(dong_name.strip(), na=False)]
+    if dong_name.strip() and "umdNm" in df.columns:
+        df = df[df["umdNm"].astype(str).str.contains(dong_name.strip(), na=False)]
 
     if df.empty:
         st.warning(f"'{dong_name}' 거래 없음")
         return pd.DataFrame()
 
     df = df.rename(columns={
-        "dealYear": "년", "dealMonth": "월", "dealDay": "일", "umdNm": "법정동", "jibun": "지번",
-        "aptNm": "건물명", "offiNm": "건물명", "mviNm": "건물명", "bldgNm": "건물명",
-        "rletTypeNm": "건물유형", "rletTpNm": "건물유형", "buildingType": "건물유형",
-        "purpsRgnNm": "용도지역", "prpsRgnNm": "용도지역", "landUse": "용도지역",
-        "excluUseAr": "전용면적", "area": "계약면적", "dealArea": "거래면적",
-        "bldgMarea": "건물면적", "blgMarea": "건물면적", "bldgArea": "건물면적", "buildingAr": "건물면적",
-        "plArea": "대지면적", "platArea": "대지면적", "totArea": "연면적", "plottageAr": "대지면적",
-        "dealAmount": "거래금액", "deposit": "보증금", "monthlyRent": "월세",
-        "floor": "층", "flr": "층", "jimok": "지목", "buildYear": "건축년도",
-        "reqGbn": "거래유형", "dealingGbn": "거래유형", "cnclYmd": "계약취소일", "cdealDay": "계약취소일",
-        "estbDvsnNm": "중개사소재지", "estateAgentSggNm": "중개사소재지", "buildingUse": "건물주용도",
-        "buyerGbn": "매수자", "slerGbn": "매도자", "shareDealingType": "지분거래여부", "sggNm": "시군구",
+        "dealYear": "년",
+        "dealMonth": "월",
+        "dealDay": "일",
+        "umdNm": "법정동",
+        "jibun": "지번",
+        "aptNm": "건물명",
+        "offiNm": "건물명",
+        "mviNm": "건물명",
+        "bldgNm": "건물명",
+        "rletTypeNm": "건물유형",
+        "rletTpNm": "건물유형",
+        "buildingType": "건물유형",
+        "purpsRgnNm": "용도지역",
+        "prpsRgnNm": "용도지역",
+        "landUse": "용도지역",
+        "excluUseAr": "전용면적",
+        "area": "계약면적",
+        "dealArea": "거래면적",
+        "bldgMarea": "건물면적",
+        "blgMarea": "건물면적",
+        "bldgArea": "건물면적",
+        "buildingAr": "건물면적",
+        "plArea": "대지면적",
+        "platArea": "대지면적",
+        "totArea": "연면적",
+        "plottageAr": "대지면적",
+        "dealAmount": "거래금액",
+        "deposit": "보증금",
+        "monthlyRent": "월세",
+        "floor": "층",
+        "flr": "층",
+        "jimok": "지목",
+        "buildYear": "건축년도",
+        "reqGbn": "거래유형",
+        "dealingGbn": "거래유형",
+        "cnclYmd": "계약취소일",
+        "cdealDay": "계약취소일",
+        "estbDvsnNm": "중개사소재지",
+        "estateAgentSggNm": "중개사소재지",
+        "buildingUse": "건물주용도",
+        "buyerGbn": "매수자",
+        "slerGbn": "매도자",
+        "shareDealingType": "지분거래여부",
+        "sggNm": "시군구",
     })
 
     if "법정동" in df.columns and "지번" in df.columns:
-        df["소재지"] = df["법정동"] + " " + df["지번"].fillna("").astype(str).str.strip()
+        df["소재지"] = df["법정동"].fillna("").astype(str) + " " + df["지번"].fillna("").astype(str).str.strip()
     elif "법정동" in df.columns:
         df["소재지"] = df["법정동"]
 
@@ -1383,35 +792,43 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         )
 
     if trans_type == "매매" and "거래금액" in df.columns:
-        area_col = next((c for c in ["전용면적", "건물면적", "연면적", "거래면적", "대지면적", "계약면적"] if c in df.columns), None)
+        area_col = next(
+            (c for c in ["전용면적", "건물면적", "연면적", "거래면적", "대지면적", "계약면적"] if c in df.columns),
+            None
+        )
         if area_col:
-            def pyeong(row):
+            def calc_pyeong(row):
                 try:
-                    p = int(str(row["거래금액"]).replace(",", ""))
-                    a = float(str(row[area_col]).replace(",", ""))
-                    if a <= 0:
+                    price = int(str(row["거래금액"]).replace(",", "").strip())
+                    area = float(str(row[area_col]).replace(",", "").strip())
+                    if area <= 0:
                         return ""
-                    pp = int(p / (a / 3.3058))
+                    pp = int(price / (area / 3.3058))
                     uk, man = pp // 10000, pp % 10000
-                    return f"{uk}억 {man}만원" if uk and man else (f"{uk}억원" if uk else f"{pp}만원")
+                    if uk > 0:
+                        return f"{uk}억 {man}만원" if man > 0 else f"{uk}억원"
+                    return f"{pp}만원"
                 except:
                     return ""
-            df["평당가격"] = df.apply(pyeong, axis=1)
 
-    disp = [
+            df["평당가격"] = df.apply(calc_pyeong, axis=1)
+
+    display_cols = [
         "계약일", "소재지", "건물유형", "용도지역", "건물주용도", "건물명", "건축년도",
         "대지면적", "건물면적", "연면적", "전용면적", "층", "거래금액", "평당가격",
         "매수자", "매도자", "지분거래여부", "거래유형", "중개사소재지", "계약취소일",
     ]
-    df = df[[c for c in disp if c in df.columns]].copy()
+    df = df[[c for c in display_cols if c in df.columns]].copy()
 
     def fmt_money(v):
         if pd.isna(v):
             return ""
         try:
-            p = int(str(v).replace(",", ""))
+            p = int(str(v).replace(",", "").strip())
             uk, man = p // 10000, p % 10000
-            return f"{uk}억 {man}만원" if uk and man else (f"{uk}억원" if uk else f"{p}만원")
+            if uk > 0:
+                return f"{uk}억 {man}만원" if man > 0 else f"{uk}억원"
+            return f"{p}만원"
         except:
             return v
 
@@ -1436,10 +853,10 @@ with tab1:
     with st.form("form_trade"):
         c1, c2 = st.columns(2)
         with c1:
-            prop_t = st.selectbox("매물 종류", [
-                "아파트", "아파트분양권", "오피스텔", "연립/다세대",
-                "단독/다가구", "상업/업무용", "공장 및 창고", "토지"
-            ])
+            prop_t = st.selectbox(
+                "매물 종류",
+                ["아파트", "아파트분양권", "오피스텔", "연립/다세대", "단독/다가구", "상업/업무용", "공장 및 창고", "토지"]
+            )
         with c2:
             tran_t = st.selectbox("거래 종류", ["매매", "전월세"])
 
@@ -1468,10 +885,10 @@ with tab1:
                     st.dataframe(rdf, use_container_width=True)
 
                     buf = BytesIO()
-                    with pd.ExcelWriter(buf, engine="xlsxwriter") as wr:
-                        rdf.to_excel(wr, index=True, index_label="순번", sheet_name="실거래가")
+                    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+                        rdf.to_excel(writer, index=True, index_label="순번", sheet_name="실거래가")
 
-                    st.download_button("📥 엑셀 다운로드", buf.getvalue(), "실거래가.xlsx")
+                    st.download_button("📥 엑셀 다운로드", data=buf.getvalue(), file_name="실거래가.xlsx")
             else:
                 st.error("지역을 찾을 수 없습니다.")
 
@@ -1480,7 +897,7 @@ with tab2:
     st.caption("전유공용면적 충돌 탐지 포함")
 
     with st.form("form_bld"):
-        c1, c2, c3 = st.columns()[5][4]
+        c1, c2, c3 = st.columns([3, 1, 1])
         with c1:
             addr_in = st.text_input("지번 주소 (필수)", placeholder="예: 상도동 450 / 상도동 363-164")
         with c2:
@@ -1498,6 +915,7 @@ with tab2:
             st.stop()
 
         sgg_cd, bjdong_cd, full_loc = get_bjdong_code(region_term)
+
         if not sgg_cd:
             st.error("지역 코드를 찾을 수 없습니다.")
             st.stop()
@@ -1518,12 +936,12 @@ with tab2:
         ) = get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, dong_in, ho_in)
 
         with st.expander("🔍 디버그 정보", expanded=False):
-            st.write(f"**탐색 필지 수:** {jibun_cnt}개")
+            st.write(f"탐색 필지 수: {jibun_cnt}개")
 
             if exact_jibun:
-                st.write("**target_dong 실제 지번:**")
+                st.write("target_dong 실제 지번:")
                 for j in exact_jibun:
-                    st.code(f"sigunguCd={j}, bjdongCd={j}, platGbCd={j}, bun={j}, ji={j}")[6][7][5][4]
+                    st.code(f"sigunguCd={j[0]}, bjdongCd={j[1]}, platGbCd={j[2]}, bun={j[3]}, ji={j[4]}")
 
             if not df_titles.empty and dong_in:
                 matched = df_titles[df_titles.apply(
@@ -1531,21 +949,21 @@ with tab2:
                     axis=1
                 )]
                 pk_list = matched["mgmBldrgstPk"].tolist() if not matched.empty and "mgmBldrgstPk" in matched.columns else []
-                st.write(f"**표제부 동 매칭:** {len(matched)}건 | **target_pks:** {pk_list}")
+                st.write(f"표제부 동 매칭: {len(matched)}건 | target_pks: {pk_list}")
 
                 if not matched.empty:
                     cols = [c for c in ["dongNm", "bldNm", "platPlc", "mgmBldrgstPk"] if c in matched.columns]
-                    st.dataframe(matched[cols].head(5))
+                    st.dataframe(matched[cols].head(5), use_container_width=True)
 
-            st.write(f"**전유 판정 상태:** `{expos_status}`")
+            st.write(f"전유 판정 상태: {expos_status}")
 
             if ho_in and expos_debug_log:
-                st.write("**전유공용면적 로그:**")
+                st.write("전유공용면적 로그:")
                 for log in expos_debug_log:
                     st.json(log)
 
         if df_recap.empty and df_titles.empty:
-            st.error("🚨 조회 결과 없음. 지번 주소를 다시 확인해주세요.")
+            st.error("조회 결과 없음. 지번 주소를 다시 확인해주세요.")
             st.stop()
 
         is_viol = False
@@ -1561,8 +979,23 @@ with tab2:
         if not df_recap.empty:
             st.markdown("---")
             st.markdown("### 🏢 총괄표제부")
-            r = df_recap.iloc
+            r = df_recap.iloc[0]
             st.markdown(f"**📍 {safe_val(r.get('bldNm'), '명칭없음')}**  `{safe_val(r.get('platPlc', r.get('newPlatPlc')))}`")
+
+            cols_r = {
+                "mainPurpsCdNm": "주용도",
+                "totArea": "연면적(㎡)",
+                "hhldCnt": "세대수",
+                "bcRat": "건폐율(%)",
+                "vlRat": "용적률(%)",
+                "totPkngCnt": "주차대수",
+            }
+
+            parts = []
+            for k, v in cols_r.items():
+                if k in r:
+                    parts.append(f"**{v}:** {safe_val(r.get(k))}")
+            st.markdown(" | ".join(parts))
 
         if not df_titles.empty:
             st.markdown("---")
@@ -1590,7 +1023,9 @@ with tab2:
                 df_show["사용승인일"] = df_show["사용승인일"].apply(fmt_date)
 
             if "위반건축물" in df_show.columns:
-                df_show["위반건축물"] = df_show["위반건축물"].apply(lambda x: "⚠️ 위반" if str(x).strip() == "1" else "정상")
+                df_show["위반건축물"] = df_show["위반건축물"].apply(
+                    lambda x: "⚠️ 위반" if str(x).strip() == "1" else "정상"
+                )
 
             df_show.index = range(1, len(df_show) + 1)
             st.caption(f"총 {len(df_show)}개 동")
@@ -1608,13 +1043,14 @@ with tab2:
                     render_expos_card(grp, is_missing_area)
 
             elif expos_status == EXPOS_CONFLICT:
-                conflict_dong = df_expos_conflict["dongNm"].iloc if not df_expos_conflict.empty else "?"
-                exact_one = list(exact_jibun) if exact_jibun else ("?", "?", "?", "?", "?")
+                conflict_dong = df_expos_conflict["dongNm"].iloc[0] if not df_expos_conflict.empty else "?"
+                exact_one = list(exact_jibun)[0] if exact_jibun else ("?", "?", "?", "?", "?")
+
                 st.warning(
                     f"⚠️ 동 체계 불일치 감지\n\n"
                     f"- 입력 동: {dong_in}동\n"
                     f"- 전유 API 응답 동: {conflict_dong}\n"
-                    f"- 지번: {exact_one}-{exact_one}\n"[7][5]
+                    f"- 지번: {exact_one[3]}-{exact_one[4]}\n"
                     f"- 호수: {ho_in}호\n"
                     f"- 아래 데이터는 같은 지번·호수 기준 참고용입니다."
                 )
@@ -1634,13 +1070,15 @@ with tab2:
         if df_floor.empty:
             st.info("층별개요 데이터가 없습니다.")
         else:
-            fl_col = {k: v for k, v in {
-                "dongNm": "동명칭",
-                "flrNoNm": "층",
-                "mainPurpsCdNm": "주용도",
-                "strctCdNm": "구조",
-                "area": "면적(㎡)"
-            }.items() if k in df_floor.columns}
+            fl_col = {
+                k: v for k, v in {
+                    "dongNm": "동명칭",
+                    "flrNoNm": "층",
+                    "mainPurpsCdNm": "주용도",
+                    "strctCdNm": "구조",
+                    "area": "면적(㎡)",
+                }.items() if k in df_floor.columns
+            }
 
             df_fl = df_floor[list(fl_col.keys())].rename(columns=fl_col).copy()
             df_fl.index = range(1, len(df_fl) + 1)
