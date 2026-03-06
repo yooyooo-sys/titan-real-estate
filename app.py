@@ -192,9 +192,10 @@ def match_ho(target, ho_nm):
     return False
 
 
-# ★ 핵심 수정: 실제 누적 수집건수 기준으로 페이지 종료 판단
+# ★ 수정1: (items, total_count) 튜플 반환
 def fetch_bld_api(endpoint, sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=50):
-    all_items = []
+    all_items   = []
+    total_count = 0
     for page in range(1, max_pages + 1):
         url = (
             f"{endpoint}?serviceKey={MOLIT_API_KEY}"
@@ -216,23 +217,22 @@ def fetch_bld_api(endpoint, sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=50):
                 time.sleep(0.5)
         if not success:
             break
-        body  = xml_data.get("response", {}).get("body", {})
-        items = body.get("items", {}).get("item", []) if body.get("items") else []
+        body        = xml_data.get("response", {}).get("body", {})
+        total_count = int(body.get("totalCount", 0))
+        items       = body.get("items", {}).get("item", []) if body.get("items") else []
         if isinstance(items, dict):
             items = [items]
         if not items:
             break
         all_items.extend(items)
-        total_count = int(body.get("totalCount", 0))
-        # ★ 수정: page * 1000 대신 실제 누적 건수로 비교
         if len(all_items) >= total_count:
             break
-    return all_items
+    return all_items, total_count  # ★ 튜플 반환
 
 
 def get_all_jibun(sgg_cd, bjdong_cd, plat_gb, bun, ji):
     result = [(sgg_cd, bjdong_cd, plat_gb, bun, ji)]
-    items  = fetch_bld_api(URL_ATCH, sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=5)
+    items, _ = fetch_bld_api(URL_ATCH, sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=5)
     for item in items:
         c = (
             str(item.get("atchSigunguCd", sgg_cd)).zfill(5),
@@ -328,7 +328,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
     raw_titles = []
     for (js, jb, jp, jbun, jji) in all_jibun:
         for p_gb in [jp] + [x for x in plat_cands if x != jp]:
-            items = fetch_bld_api(URL_TITLE, js, jb, p_gb, jbun, jji, max_pages=10)
+            items, _ = fetch_bld_api(URL_TITLE, js, jb, p_gb, jbun, jji, max_pages=10)
             valid = [x for x in items if to_float(x.get("totArea", "0")) > 0]
             if valid:
                 raw_titles.extend(valid)
@@ -376,7 +376,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
     status.info("🏢 총괄표제부 수집 중...")
     df_recap = pd.DataFrame()
     for p_gb in ["0", "2", "3", "1"]:
-        items = fetch_bld_api(URL_RECAP, sgg_cd, bjdong_cd, p_gb, bun, ji, max_pages=2)
+        items, _ = fetch_bld_api(URL_RECAP, sgg_cd, bjdong_cd, p_gb, bun, ji, max_pages=2)
         valid = [x for x in items if to_float(x.get("totArea", "0")) > 0]
         if valid:
             df_recap = pd.DataFrame(valid)
@@ -487,7 +487,6 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 is_missing_area = True
             return df_dong, pd.DataFrame()
 
-        # 호수는 맞지만 동명 매칭 실패 → CONFLICT
         api_dong = df_ho["dongNm"].iloc[0] if "dongNm" in df_ho.columns and not df_ho.empty else "?"
         expos_debug_log.append({
             "판정": "CONFLICT",
@@ -507,14 +506,16 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 if found:
                     break
                 for p_gb in [jp] + [x for x in ["2", "3", "0", "1"] if x != jp]:
-                    items = fetch_bld_api(URL_EXPOS, js, jb, p_gb, jbun, jji, max_pages=20)
+                    # ★ 수정2: total_count 받아서 디버그 로그에 기록
+                    items, total_count = fetch_bld_api(URL_EXPOS, js, jb, p_gb, jbun, jji, max_pages=20)
                     if not items:
                         continue
                     expos_debug_log.append({
-                        "방식":     "exact_jibun 직접조회",
-                        "지번":     f"bun={jbun} ji={jji} platGb={p_gb}",
-                        "수집건수": len(items),
-                        "hoNm샘플": [x.get("hoNm", "") for x in items[:5]],
+                        "방식":        "exact_jibun 직접조회",
+                        "지번":        f"bun={jbun} ji={jji} platGb={p_gb}",
+                        "API_totalCount": total_count,   # ★ 추가
+                        "실제수집건수":   len(items),      # ★ 명칭 변경
+                        "hoNm샘플":    [x.get("hoNm", "") for x in items[:5]],
                     })
                     m_df, c_df = analyze_expos(pd.DataFrame(items), f"exact_jibun {jbun}-{jji} platGb={p_gb}")
                     if not m_df.empty:
@@ -533,12 +534,14 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
             all_raw = []
             for (js, jb, jp, jbun, jji) in all_jibun:
                 for p_gb in [jp] + [x for x in ["2", "3", "0", "1"] if x != jp]:
-                    items = fetch_bld_api(URL_EXPOS, js, jb, p_gb, jbun, jji, max_pages=20)
+                    # ★ 수정2: total_count 받아서 디버그 로그에 기록
+                    items, total_count = fetch_bld_api(URL_EXPOS, js, jb, p_gb, jbun, jji, max_pages=20)
                     if items:
                         expos_debug_log.append({
-                            "방식":     "전체수집",
-                            "지번":     f"bun={jbun} ji={jji} platGb={p_gb}",
-                            "수집건수": len(items),
+                            "방식":        "전체수집",
+                            "지번":        f"bun={jbun} ji={jji} platGb={p_gb}",
+                            "API_totalCount": total_count,  # ★ 추가
+                            "실제수집건수":   len(items),     # ★ 명칭 변경
                         })
                         all_raw.extend(items)
 
@@ -573,7 +576,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
         if not df_floor.empty:
             break
         for p_gb in [jp] + [x for x in plat_cands if x != jp]:
-            items = fetch_bld_api(URL_FLOOR, js, jb, p_gb, jbun, jji, max_pages=20)
+            items, _ = fetch_bld_api(URL_FLOOR, js, jb, p_gb, jbun, jji, max_pages=20)
             if not items:
                 continue
             tmp = pd.DataFrame(items)
@@ -895,11 +898,7 @@ with tab2:
             }
             recap_data = {v: safe_val(r.get(k)) for k, v in recap_map.items() if k in r.index}
             if recap_data:
-                st.dataframe(
-                    pd.DataFrame([recap_data]),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                st.dataframe(pd.DataFrame([recap_data]), use_container_width=True, hide_index=True)
 
         # ── 표제부 전체 동 목록 ──
         if not df_titles.empty:
