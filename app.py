@@ -1,6 +1,5 @@
 # ============================================================
-# 부동산 올인원 봇 v16 — 최종 완성본
-# 실거래가 + 건축물대장 (pk 직접조회 방식)
+# 부동산 올인원 봇 v17 — 최종 완성본
 # ============================================================
 import streamlit as st
 import pandas as pd
@@ -125,15 +124,6 @@ def match_dong(target, dong_nm, bld_nm):
             return True
     return False
 
-def is_different_dong(target, dong_nm, bld_nm):
-    if not target:
-        return False
-    d = str(dong_nm).strip()
-    b = str(bld_nm).strip()
-    if d in ("", "None", "nan") and b in ("", "None", "nan"):
-        return False
-    return not match_dong(target, dong_nm, bld_nm)
-
 def match_ho(target, ho_nm):
     if not target:
         return True
@@ -160,36 +150,6 @@ def fetch_bld_api(endpoint, sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=50):
             f"{endpoint}?serviceKey={MOLIT_API_KEY}"
             f"&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}"
             f"&platGbCd={plat_gb}&bun={bun}&ji={ji}"
-            f"&numOfRows=1000&pageNo={page}"
-        )
-        xml_data = {}
-        for _ in range(3):
-            try:
-                res = requests.get(url, timeout=15)
-                if res.text.strip().startswith("<"):
-                    xml_data = xmltodict.parse(res.content)
-                    if "OpenAPI_ServiceResponse" not in xml_data:
-                        break
-            except:
-                time.sleep(0.5)
-        body  = xml_data.get("response", {}).get("body", {})
-        items = body.get("items", {}).get("item", []) if body.get("items") else []
-        if isinstance(items, dict):
-            items = [items]
-        if not items:
-            break
-        all_items.extend(items)
-        if page * 1000 >= int(body.get("totalCount", 0)):
-            break
-    return all_items
-
-def fetch_bld_api_by_pk(endpoint, mgm_pk, max_pages=10):
-    """mgmBldrgstPk로 직접 조회 — 가장 정확한 방식"""
-    all_items = []
-    for page in range(1, max_pages + 1):
-        url = (
-            f"{endpoint}?serviceKey={MOLIT_API_KEY}"
-            f"&mgmBldrgstPk={mgm_pk}"
             f"&numOfRows=1000&pageNo={page}"
         )
         xml_data = {}
@@ -281,7 +241,8 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 if pk:
                     target_pks.add(pk)
 
-    # target_dong 실제 지번
+    # ★ target_dong의 실제 platPlc 지번 추출 (핵심)
+    # 표제부에서 해당 동의 실제 위치 지번을 뽑아두기
     target_exact_jibun = []
     if not df_titles.empty:
         seen_j = set()
@@ -309,8 +270,13 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
 
     # ─────────────────────────────────────────────────────
     # STEP 3: 전유공용면적
-    # ① 표제부 pk로 직접 조회 (우선, 가장 정확)
-    # ② 실패 시 지번 기반 전체 수집 → hoNm → dongNm 필터
+    #
+    # 전략 (순서대로 시도):
+    # ① 표제부에서 추출한 target_dong의 실제 platPlc 지번으로 조회
+    #    → hoNm 필터만 적용, dongNm 필터 없음 (가장 정확)
+    # ② ①이 실패하면 전체 필지 수집
+    #    → hoNm 필터 → match_dong True 우선
+    #    → 없으면 hoNm 필터 결과 그대로 반환 (dongNm 필터 제거)
     # ─────────────────────────────────────────────────────
     status.info("🏠 전유공용면적 수집 중...")
     df_expos        = pd.DataFrame()
@@ -318,87 +284,99 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
     expos_debug_log = []
 
     if target_ho:
-        all_expos_raw = []
 
-        # ① pk 직접 조회
-        if target_pks:
-            for pk in target_pks:
-                items = fetch_bld_api_by_pk(URL_EXPOS, pk, max_pages=10)
-                if items:
+        # ① target_dong 실제 지번으로 직접 조회
+        found_by_exact = False
+        if target_exact_jibun:
+            for (js, jb, jp, jbun, jji) in target_exact_jibun:
+                if found_by_exact:
+                    break
+                for p_gb in ["2", "3", "0"]:
+                    items = fetch_bld_api(URL_EXPOS, js, jb, p_gb, jbun, jji, max_pages=20)
+                    if not items:
+                        continue
                     expos_debug_log.append({
-                        "방식": "pk직접조회",
-                        "pk": pk,
+                        "방식": "exact_jibun 직접조회",
+                        "지번": f"bun={jbun} ji={jji} platGb={p_gb}",
                         "수집건수": len(items),
-                        "hoNm샘플":   [x.get("hoNm",   "") for x in items[:5]],
-                        "dongNm샘플": [x.get("dongNm", "") for x in items[:5]],
+                        "hoNm샘플": [x.get("hoNm", "") for x in items[:5]],
                     })
-                    all_expos_raw.extend(items)
+                    # hoNm 필터만 적용 (dongNm 필터 없음)
+                    matched = [x for x in items if match_ho(target_ho, x.get("hoNm", ""))]
+                    if matched:
+                        df_expos = pd.DataFrame(matched)
+                        df_expos["dongNm"] = df_expos.apply(lambda r: restore(r, "dongNm"), axis=1)
+                        df_expos["bldNm"]  = df_expos.apply(lambda r: restore(r, "bldNm"),  axis=1)
+                        expos_debug_log.append({
+                            "결과": "exact_jibun에서 호수 발견",
+                            "건수": len(df_expos),
+                            "dongNm": df_expos["dongNm"].tolist()[:3],
+                        })
+                        found_by_exact = True
+                        break
 
-        # ② pk 직접 조회 실패 시 지번 기반
-        if not all_expos_raw:
-            expos_debug_log.append({"pk직접조회결과": "0건 → 지번 기반 조회로 전환"})
+        # ② 전체 필지 수집 (①이 실패한 경우)
+        if not found_by_exact:
+            expos_debug_log.append({"exact_jibun조회": "호수 미발견 → 전체 수집으로 전환"})
+            all_expos_raw = []
             for (js, jb, jp, jbun, jji) in all_jibun:
                 for p_gb in ["2", "3", "0"]:
                     items = fetch_bld_api(URL_EXPOS, js, jb, p_gb, jbun, jji, max_pages=20)
                     if items:
                         expos_debug_log.append({
-                            "방식": "지번조회",
+                            "방식": "전체수집",
                             "지번": f"bun={jbun} ji={jji} platGb={p_gb}",
                             "수집건수": len(items),
-                            "hoNm샘플": [x.get("hoNm",          "") for x in items[:5]],
+                            "hoNm샘플": [x.get("hoNm", "") for x in items[:5]],
                             "pk샘플":   [x.get("mgmBldrgstPk", "") for x in items[:3]],
                         })
                         all_expos_raw.extend(items)
 
-        if not all_expos_raw:
-            expos_debug_log.append({"결과": "전체 조회 결과 0건"})
-        else:
-            # 중복 제거
-            seen_e, unique_expos = set(), []
-            for item in all_expos_raw:
-                key = (item.get("mgmBldrgstPk"), item.get("hoNm"), item.get("exposPubuseGbCdNm"))
-                if key not in seen_e:
-                    seen_e.add(key)
-                    unique_expos.append(item)
+            if not all_expos_raw:
+                expos_debug_log.append({"결과": "전체 조회 0건"})
+            else:
+                # 중복 제거
+                seen_e, unique_expos = set(), []
+                for item in all_expos_raw:
+                    key = (item.get("mgmBldrgstPk"), item.get("hoNm"), item.get("exposPubuseGbCdNm"))
+                    if key not in seen_e:
+                        seen_e.add(key)
+                        unique_expos.append(item)
 
-            df_all = pd.DataFrame(unique_expos)
-            df_all["dongNm"] = df_all.apply(lambda r: restore(r, "dongNm"), axis=1)
-            df_all["bldNm"]  = df_all.apply(lambda r: restore(r, "bldNm"),  axis=1)
+                df_all = pd.DataFrame(unique_expos)
+                df_all["dongNm"] = df_all.apply(lambda r: restore(r, "dongNm"), axis=1)
+                df_all["bldNm"]  = df_all.apply(lambda r: restore(r, "bldNm"),  axis=1)
+                expos_debug_log.append({"전체수집(중복제거)": len(df_all)})
 
-            expos_debug_log.append({"전체수집(중복제거)": len(df_all)})
-
-            # hoNm 필터
-            df_ho = df_all[df_all.apply(lambda r: match_ho(target_ho, r.get("hoNm", "")), axis=1)]
-            expos_debug_log.append({
-                "hoNm필터후":   len(df_ho),
-                "매칭된hoNm":   df_ho["hoNm"].tolist()[:5]   if not df_ho.empty else [],
-                "매칭된dongNm": df_ho["dongNm"].tolist()[:5] if not df_ho.empty else [],
-            })
-
-            # dongNm 필터 (지번 기반 조회 시 오매칭 방지)
-            if target_dong and not df_ho.empty:
-                df_match = df_ho[df_ho.apply(
-                    lambda r: match_dong(target_dong, r.get("dongNm", ""), r.get("bldNm", "")), axis=1
+                # hoNm 필터
+                df_ho = df_all[df_all.apply(
+                    lambda r: match_ho(target_ho, r.get("hoNm", "")), axis=1
                 )]
-                if not df_match.empty:
-                    df_ho = df_match
-                    expos_debug_log.append({"동필터": "dongNm 일치", "건수": len(df_ho)})
-                else:
-                    before = len(df_ho)
-                    df_ho = df_ho[~df_ho.apply(
-                        lambda r: is_different_dong(target_dong, r.get("dongNm", ""), r.get("bldNm", "")), axis=1
-                    )]
-                    expos_debug_log.append({
-                        "동필터": "is_different_dong 제거",
-                        "필터전": before,
-                        "필터후": len(df_ho),
-                    })
+                expos_debug_log.append({
+                    "hoNm필터후":   len(df_ho),
+                    "매칭된hoNm":   df_ho["hoNm"].tolist()[:5]   if not df_ho.empty else [],
+                    "매칭된dongNm": df_ho["dongNm"].tolist()[:5] if not df_ho.empty else [],
+                })
 
-            if not df_ho.empty:
-                df_expos = df_ho.copy()
-                if "area" not in df_expos.columns:
-                    df_expos["area"] = "0"
-                    is_missing_area = True
+                if not df_ho.empty:
+                    # match_dong True인 것 우선
+                    if target_dong:
+                        df_match = df_ho[df_ho.apply(
+                            lambda r: match_dong(target_dong, r.get("dongNm", ""), r.get("bldNm", "")), axis=1
+                        )]
+                        if not df_match.empty:
+                            df_ho = df_match
+                            expos_debug_log.append({"동필터": "match_dong 일치", "건수": len(df_ho)})
+                        else:
+                            # ★ match_dong 실패해도 hoNm 결과 그대로 사용
+                            expos_debug_log.append({
+                                "동필터": "match_dong 0건 → dongNm 필터 미적용, hoNm 결과 그대로 사용",
+                                "건수": len(df_ho),
+                            })
+                    df_expos = df_ho.copy()
+                    if "area" not in df_expos.columns:
+                        df_expos["area"] = "0"
+                        is_missing_area = True
 
     # STEP 4: 층별개요
     status.info("🪜 층별개요 수집 중...")
@@ -550,11 +528,11 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         if area_col:
             def pyeong(row):
                 try:
-                    p  = int(str(row["거래금액"]).replace(",", ""))
-                    a  = float(str(row[area_col]).replace(",", ""))
+                    p       = int(str(row["거래금액"]).replace(",", ""))
+                    a       = float(str(row[area_col]).replace(",", ""))
                     if a <= 0:
                         return ""
-                    pp     = int(p / (a / 3.3058))
+                    pp      = int(p / (a / 3.3058))
                     uk, man = pp // 10000, pp % 10000
                     return (f"{uk}억 {man}만원" if man else f"{uk}억원") if uk else f"{pp}만원"
                 except:
@@ -667,7 +645,6 @@ with tab2:
             sgg_cd, bjdong_cd, plat_gb, bun, ji, dong_in, ho_in
         )
 
-        # 디버그
         with st.expander("🔍 디버그 정보 (조회 안 될 때 확인)", expanded=False):
             st.write(f"**탐색 필지 수:** {jibun_cnt}개")
             if exact_jibun:
@@ -899,3 +876,4 @@ with tab2:
 
         st.markdown("---")
         st.caption("※ 국토교통부 건축HUB API 기반 / 법적 효력 없음 / 공식 증명서는 정부24·세움터에서 발급")
+
