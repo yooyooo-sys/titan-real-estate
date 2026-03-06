@@ -98,7 +98,6 @@ def normalize_ho(v):
     return re.sub(r"[^A-Za-z0-9가-힣]", "", str(v)).replace("제", "").upper()
 
 
-# ★ API 파라미터용: "103" → "103동", "501" → "501호" 형태로 변환
 def to_api_dong(v):
     v = str(v).strip()
     if not v:
@@ -106,8 +105,7 @@ def to_api_dong(v):
     digits = re.findall(r"\d+", v)
     if not digits:
         return v
-    n = digits[-1]
-    return f"{n}동"
+    return f"{digits[-1]}동"
 
 
 def to_api_ho(v):
@@ -117,8 +115,7 @@ def to_api_ho(v):
     digits = re.findall(r"\d+", v)
     if not digits:
         return v
-    n = digits[-1]
-    return f"{n}호"
+    return f"{digits[-1]}호"
 
 
 def get_bjdong_code(search_term):
@@ -252,7 +249,6 @@ def fetch_bld_api(endpoint, sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=50):
     return all_items, total_count
 
 
-# ★ 핵심: dongNm + hoNm을 API 서버에서 직접 필터 (정규화된 형태로 전달)
 def fetch_expos_by_dong_ho(sgg_cd, bjdong_cd, plat_gb, bun, ji, dong_api, ho_api, max_pages=5):
     all_items   = []
     total_count = 0
@@ -291,7 +287,6 @@ def fetch_expos_by_dong_ho(sgg_cd, bjdong_cd, plat_gb, bun, ji, dong_api, ho_api
     return all_items, total_count
 
 
-# ★ 호수만으로 조회 (동 입력 없는 경우)
 def fetch_expos_by_ho(sgg_cd, bjdong_cd, plat_gb, bun, ji, ho_api, max_pages=5):
     all_items   = []
     total_count = 0
@@ -489,7 +484,6 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
     is_missing_area   = False
     expos_debug_log   = []
 
-    # ★ API 파라미터용 정규화: "103" → "103동", "501" → "501호"
     dong_api = to_api_dong(target_dong) if target_dong else ""
     ho_api   = to_api_ho(target_ho)     if target_ho   else ""
 
@@ -540,7 +534,6 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 is_missing_area = True
             return df_ho, pd.DataFrame()
 
-        # 1단계: 동번호 정확 일치
         df_strict = df_ho[df_ho.apply(
             lambda r: strict_match_dong(target_dong, r.get("dongNm", "")), axis=1
         )]
@@ -551,7 +544,6 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 is_missing_area = True
             return df_strict, pd.DataFrame()
 
-        # 2단계: 지번 일치 (CONFLICT)
         df_exact = df_ho[df_ho["_jibun_key"].isin(target_exact_jibun)] if target_exact_jibun else pd.DataFrame()
         if not df_exact.empty:
             df_exact = df_exact.drop(columns=["_jibun_key"], errors="ignore")
@@ -561,7 +553,6 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
             expos_debug_log.append({"판정": "CONFLICT", "이유": "호수/지번 일치, 동명 불일치"})
             return pd.DataFrame(), df_exact
 
-        # 3단계: 동 이름 fuzzy 일치
         df_dong = df_ho[df_ho.apply(
             lambda r: match_dong(target_dong, r.get("dongNm", ""), r.get("bldNm", "")), axis=1
         )]
@@ -584,7 +575,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
         return pd.DataFrame(), df_ho
 
     if target_ho:
-        # ★ 1단계: dongNm+hoNm 서버 필터 (정규화된 파라미터 사용)
+        # 1단계: dongNm+hoNm 서버 필터
         if dong_api and ho_api:
             for (js, jb, jp, jbun, jji) in all_jibun:
                 if expos_status == EXPOS_MATCH:
@@ -603,7 +594,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                         "dongNm샘플":     [x.get("dongNm", "") for x in items[:3]],
                     })
                     if items:
-                        m_df, c_df = analyze_expos(pd.DataFrame(items), f"dong_ho서버필터")
+                        m_df, c_df = analyze_expos(pd.DataFrame(items), "dong_ho서버필터")
                         if not m_df.empty:
                             df_expos     = m_df
                             expos_status = EXPOS_MATCH
@@ -611,10 +602,8 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                         if not c_df.empty and df_expos_conflict.empty:
                             df_expos_conflict = c_df
                             expos_status      = EXPOS_CONFLICT
-                    # dongNm+hoNm 필터는 서버가 직접 필터하므로 첫 지번에서 결과 없으면 다음 지번으로
-                    # (break 없이 모든 지번 순회)
 
-        # ★ 2단계: 동 없이 hoNm 단독 서버 필터 (동 입력 없는 경우 or 1단계 실패)
+        # 2단계: hoNm 단독 서버 필터 (동 없는 경우)
         elif ho_api and expos_status != EXPOS_MATCH:
             for (js, jb, jp, jbun, jji) in all_jibun:
                 if expos_status == EXPOS_MATCH:
@@ -638,7 +627,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                             df_expos_conflict = c_df
                             expos_status      = EXPOS_CONFLICT
 
-        # ★ 3단계: 서버 필터 실패 시 bun/ji 전체 폴백
+        # 3단계: bun/ji 전체 폴백
         if expos_status != EXPOS_MATCH:
             expos_debug_log.append({"전환": "서버필터 MATCH 없음 → bun/ji 폴백 수집"})
             all_raw = []
@@ -989,29 +978,73 @@ with tab2:
         if is_viol:
             st.error("🚨 위반건축물 이력 있음! 거래 전 반드시 확인하세요.")
 
+        # ─── 총괄표제부 ───
         if not df_recap.empty:
             st.divider()
             st.markdown("### 🏢 총괄표제부")
             r = df_recap.iloc[0]
             st.markdown(f"**📍 {safe_val(r.get('bldNm'), '명칭없음')}** &nbsp; `{safe_val(r.get('platPlc', r.get('newPlatPlc')))}`")
             recap_map = {
-                "mainPurpsCdNm": "주용도", "totArea": "연면적(㎡)", "hhldCnt": "세대수",
-                "platArea": "대지면적(㎡)", "bcRat": "건폐율(%)", "vlRat": "용적률(%)",
-                "totPkngCnt": "주차대수", "useAprDay": "사용승인일",
+                "mainPurpsCdNm": "주용도",
+                "platArea":      "대지면적(㎡)",
+                "archArea":      "건축면적(㎡)",
+                "totArea":       "연면적(㎡)",
+                "bcRat":         "건폐율(%)",
+                "vlRat":         "용적률(%)",
+                "hhldCnt":       "세대수",
+                "totPkngCnt":    "주차대수",
+                "useAprDay":     "사용승인일",
             }
             recap_data = {v: safe_val(r.get(k)) for k, v in recap_map.items() if k in r.index}
             if recap_data:
                 st.dataframe(pd.DataFrame([recap_data]), use_container_width=True, hide_index=True)
 
+        # ─── 표제부 전체 동 목록 ───
         if not df_titles.empty:
             st.divider()
             st.markdown("### 📄 표제부 — 전체 동 목록")
+
+            # 주차 합계 계산
+            park_cols = ["indrMechUtcnt", "oudrMechUtcnt", "indrAutoUtcnt", "oudrAutoUtcnt"]
+            if any(c in df_titles.columns for c in park_cols):
+                total_park = sum(
+                    pd.to_numeric(df_titles[c], errors="coerce").fillna(0)
+                    for c in park_cols if c in df_titles.columns
+                ).astype(int)
+                df_titles["_pkng_total"] = total_park.apply(
+                    lambda x: f"{x}대" if x > 0 else "-"
+                )
+
+            # 승강기 정보 계산
+            if any(c in df_titles.columns for c in ["rideUseElvtCnt", "emgenUseElvtCnt"]):
+                def elv_info(row):
+                    ride  = int(pd.to_numeric(row.get("rideUseElvtCnt",  0), errors="coerce") or 0)
+                    emgen = int(pd.to_numeric(row.get("emgenUseElvtCnt", 0), errors="coerce") or 0)
+                    if ride == 0 and emgen == 0:
+                        return "-"
+                    return f"승용 {ride}대 / 비상 {emgen}대"
+                df_titles["_elv_info"] = df_titles.apply(elv_info, axis=1)
+
             col_map = {
-                "bldNm": "건물명", "dongNm": "동명칭", "platPlc": "대지위치",
-                "mainPurpsCdNm": "주용도", "strctCdNm": "주구조",
-                "grndFlrCnt": "지상층", "ugrndFlrCnt": "지하층", "heit": "높이(m)",
-                "totArea": "연면적(㎡)", "hhldCnt": "세대수",
-                "useAprDay": "사용승인일", "violBldYn": "위반",
+                "bldNm":          "건물명",
+                "dongNm":         "동명칭",
+                "platPlc":        "대지위치",
+                "mainPurpsCdNm":  "주용도",
+                "strctCdNm":      "주구조",
+                "grndFlrCnt":     "지상층",
+                "ugrndFlrCnt":    "지하층",
+                "heit":           "높이(m)",
+                "platArea":       "대지면적(㎡)",
+                "archArea":       "건축면적(㎡)",
+                "totArea":        "연면적(㎡)",
+                "bcRat":          "건폐율(%)",
+                "vlRat":          "용적률(%)",
+                "hhldCnt":        "세대수",
+                "_elv_info":      "승강기",
+                "_pkng_total":    "주차(합계)",
+                "drainMthdCdNm":  "하수처리방식",
+                "useAprDay":      "사용승인일",
+                "violBldYn":      "위반",
             }
             ex      = {k: v for k, v in col_map.items() if k in df_titles.columns}
             df_show = df_titles[list(ex.keys())].rename(columns=ex).copy()
@@ -1025,6 +1058,7 @@ with tab2:
             st.caption(f"총 {len(df_show)}개 동")
             st.dataframe(df_show, use_container_width=True)
 
+        # ─── 전유공용면적 ───
         if ho_in:
             st.divider()
             dong_lbl = f"{dong_in}동 " if dong_in else ""
@@ -1045,6 +1079,7 @@ with tab2:
             else:
                 st.error("❌ 전유공용면적 데이터를 찾을 수 없습니다. 호수를 다시 확인해주세요.")
 
+        # ─── 층별개요 ───
         st.divider()
         dong_lbl2 = f" — {dong_in}동" if dong_in else ""
         st.markdown(f"### 🪜 층별개요{dong_lbl2}")
@@ -1054,8 +1089,11 @@ with tab2:
         else:
             fl_map = {
                 k: v for k, v in {
-                    "dongNm": "동명칭", "flrNoNm": "층",
-                    "mainPurpsCdNm": "주용도", "strctCdNm": "구조", "area": "면적(㎡)",
+                    "dongNm":        "동명칭",
+                    "flrNoNm":       "층",
+                    "mainPurpsCdNm": "주용도",
+                    "strctCdNm":     "구조",
+                    "area":          "면적(㎡)",
                 }.items() if k in df_floor.columns
             }
             df_fl       = df_floor[list(fl_map.keys())].rename(columns=fl_map).copy()
