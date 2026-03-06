@@ -10,18 +10,18 @@ DONG_API_KEY = "z92CW%2FlIVtpHa46lUJJ5WCMBVQEu8C8YQS9sY2nFsG3nKq0S2J4W997c7ENV6x
 MOLIT_API_KEY = "z92CW%2FlIVtpHa46lUJJ5WCMBVQEu8C8YQS9sY2nFsG3nKq0S2J4W997c7ENV6x02Rsnf6RKJcY1hc8cLc2OlxQ%3D%3D"
 
 API_PATHS = {
-    "아파트_매매": "RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev",
-    "아파트_전월세": "RTMSDataSvcAptRent/getRTMSDataSvcAptRent",
-    "아파트분양권_매매": "RTMSDataSvcSilvTrade/getRTMSDataSvcSilvTrade",
-    "오피스텔_매매": "RTMSDataSvcOffiTrade/getRTMSDataSvcOffiTrade",
-    "오피스텔_전월세": "RTMSDataSvcOffiRent/getRTMSDataSvcOffiRent",
-    "연립/다세대_매매": "RTMSDataSvcRHTrade/getRTMSDataSvcRHTrade",
-    "연립/다세대_전월세": "RTMSDataSvcRHRent/getRTMSDataSvcRHRent",
-    "단독/다가구_매매": "RTMSDataSvcSHTrade/getRTMSDataSvcSHTrade",
-    "단독/다가구_전월세": "RTMSDataSvcSHRent/getRTMSDataSvcSHRent",
-    "상업/업무용_매매": "RTMSDataSvcNrgTrade/getRTMSDataSvcNrgTrade",
-    "공장 및 창고_매매": "RTMSDataSvcInduTrade/getRTMSDataSvcInduTrade",
-    "토지_매매": "RTMSDataSvcLandTrade/getRTMSDataSvcLandTrade",
+    "아파트_매매":         "RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev",
+    "아파트_전월세":        "RTMSDataSvcAptRent/getRTMSDataSvcAptRent",
+    "아파트분양권_매매":    "RTMSDataSvcSilvTrade/getRTMSDataSvcSilvTrade",
+    "오피스텔_매매":        "RTMSDataSvcOffiTrade/getRTMSDataSvcOffiTrade",
+    "오피스텔_전월세":      "RTMSDataSvcOffiRent/getRTMSDataSvcOffiRent",
+    "연립/다세대_매매":     "RTMSDataSvcRHTrade/getRTMSDataSvcRHTrade",
+    "연립/다세대_전월세":   "RTMSDataSvcRHRent/getRTMSDataSvcRHRent",
+    "단독/다가구_매매":     "RTMSDataSvcSHTrade/getRTMSDataSvcSHTrade",
+    "단독/다가구_전월세":   "RTMSDataSvcSHRent/getRTMSDataSvcSHRent",
+    "상업/업무용_매매":     "RTMSDataSvcNrgTrade/getRTMSDataSvcNrgTrade",
+    "공장 및 창고_매매":    "RTMSDataSvcInduTrade/getRTMSDataSvcInduTrade",
+    "토지_매매":            "RTMSDataSvcLandTrade/getRTMSDataSvcLandTrade",
 }
 
 BASE_BLD = "http://apis.data.go.kr/1613000/BldRgstHubService"
@@ -229,14 +229,16 @@ def fetch_bld_api(endpoint, sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=50):
     return all_items, total_count
 
 
-# ★ 핵심 추가: mgmBldrgstPk 로 직접 조회 (2000건 캡 우회)
-def fetch_expos_by_pk(pk, max_pages=10):
+# ★ 핵심: dongNm + hoNm 파라미터로 API 서버에서 직접 필터
+def fetch_expos_by_dong_ho(sgg_cd, bjdong_cd, plat_gb, bun, ji, dong_nm_param, ho_nm_param, max_pages=5):
     all_items   = []
     total_count = 0
     for page in range(1, max_pages + 1):
         url = (
             f"{URL_EXPOS}?serviceKey={MOLIT_API_KEY}"
-            f"&mgmBldrgstPk={pk}"
+            f"&sigunguCd={sgg_cd}&bjdongCd={bjdong_cd}"
+            f"&platGbCd={plat_gb}&bun={bun}&ji={ji}"
+            f"&dongNm={dong_nm_param}&hoNm={ho_nm_param}"
             f"&numOfRows=1000&pageNo={page}"
         )
         xml_data = {}
@@ -517,13 +519,18 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
         return pd.DataFrame(), df_ho
 
     if target_ho:
-        # ★ 핵심 수정: target_pks가 있으면 mgmBldrgstPk 직접 조회 (2000건 캡 우회)
-        if target_pks:
-            for pk in target_pks:
-                items, total_count = fetch_expos_by_pk(pk)
+        # ★ 핵심: dongNm + hoNm 파라미터로 API 서버에서 직접 필터 (2번 코드 적용)
+        for (js, jb, jp, jbun, jji) in all_jibun:
+            if expos_status == EXPOS_MATCH:
+                break
+            for p_gb in [jp] + [x for x in ["2", "3", "0", "1"] if x != jp]:
+                items, total_count = fetch_expos_by_dong_ho(
+                    js, jb, p_gb, jbun, jji,
+                    target_dong, target_ho
+                )
                 expos_debug_log.append({
-                    "방식":           "mgmBldrgstPk 직접조회",
-                    "pk":             pk,
+                    "방식":           "dongNm+hoNm 서버필터",
+                    "지번":           f"bun={jbun} ji={jji} platGb={p_gb}",
                     "API_totalCount": total_count,
                     "실제수집건수":     len(items),
                     "hoNm샘플":       [x.get("hoNm", "") for x in items[:5]],
@@ -531,7 +538,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 })
                 if not items:
                     continue
-                m_df, c_df = analyze_expos(pd.DataFrame(items), f"pk={pk}")
+                m_df, c_df = analyze_expos(pd.DataFrame(items), f"dong_ho={target_dong}/{target_ho}")
                 if not m_df.empty:
                     df_expos     = m_df
                     expos_status = EXPOS_MATCH
@@ -539,10 +546,12 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 if not c_df.empty and df_expos_conflict.empty:
                     df_expos_conflict = c_df
                     expos_status      = EXPOS_CONFLICT
+            if expos_status == EXPOS_MATCH:
+                break
 
-        # target_pks로 MATCH 못 찾으면 기존 방식(bun/ji) 폴백
+        # dong/ho 서버필터로 MATCH 못 찾으면 bun/ji 폴백
         if expos_status != EXPOS_MATCH:
-            expos_debug_log.append({"전환": "PK 조회 MATCH 없음 → bun/ji 폴백 수집"})
+            expos_debug_log.append({"전환": "dong/ho 서버필터 MATCH 없음 → bun/ji 폴백 수집"})
             all_raw = []
             for (js, jb, jp, jbun, jji) in all_jibun:
                 for p_gb in [jp] + [x for x in ["2", "3", "0", "1"] if x != jp]:
@@ -932,36 +941,35 @@ with tab2:
             dong_lbl = f"{dong_in}동 " if dong_in else ""
             st.markdown(f"### 🚪 전유공용면적 — {dong_lbl}{ho_in}호")
 
-            if expos_status == EXPOS_MATCH:
-                pks = df_expos["mgmBldrgstPk"].unique() if "mgmBldrgstPk" in df_expos.columns else [None]
-                for pk in pks[:3]:
-                    grp = df_expos[df_expos["mgmBldrgstPk"] == pk] if pk is not None else df_expos
-                    render_expos_card(grp, is_missing_area, conflict=False)
-            elif expos_status == EXPOS_CONFLICT:
-                pks = df_expos_conflict["mgmBldrgstPk"].unique() if "mgmBldrgstPk" in df_expos_conflict.columns else [None]
-                for pk in pks[:3]:
-                    grp = df_expos_conflict[df_expos_conflict["mgmBldrgstPk"] == pk] if pk is not None else df_expos_conflict
-                    render_expos_card(grp, is_missing_area, conflict=True)
+            if expos_status == EXPOS_MATCH and not df_expos.empty:
+                grp_cols = [c for c in ["dongNm", "hoNm"] if c in df_expos.columns]
+                if grp_cols:
+                    for _, grp in df_expos.groupby(grp_cols):
+                        render_expos_card(grp, is_missing_area, conflict=False)
+                else:
+                    render_expos_card(df_expos, is_missing_area, conflict=False)
+
+            elif expos_status == EXPOS_CONFLICT and not df_expos_conflict.empty:
+                grp_cols = [c for c in ["dongNm", "hoNm"] if c in df_expos_conflict.columns]
+                if grp_cols:
+                    for _, grp in df_expos_conflict.groupby(grp_cols):
+                        render_expos_card(grp, is_missing_area, conflict=True)
+                else:
+                    render_expos_card(df_expos_conflict, is_missing_area, conflict=True)
+
             else:
-                st.error("❌ 전유공용면적 데이터를 찾을 수 없습니다. 호수를 다시 확인해주세요.")
+                st.warning("해당 호수의 전유공용면적 정보를 찾을 수 없습니다.")
 
-        st.divider()
-        dong_lbl2 = f" — {dong_in}동" if dong_in else ""
-        st.markdown(f"### 🪜 층별개요{dong_lbl2}")
-
-        if df_floor.empty:
-            st.info("층별개요 데이터가 없습니다.")
-        else:
-            fl_map = {
-                k: v for k, v in {
-                    "dongNm": "동명칭", "flrNoNm": "층",
-                    "mainPurpsCdNm": "주용도", "strctCdNm": "구조", "area": "면적(㎡)",
-                }.items() if k in df_floor.columns
+        if not df_floor.empty:
+            st.divider()
+            st.markdown("### 🪜 층별개요")
+            floor_col_map = {
+                "dongNm": "동명칭", "flrNoNm": "층명칭", "flrNo": "층번호",
+                "mainPurpsCdNm": "주용도", "etcPurps": "기타용도",
+                "strctCdNm": "구조", "area": "면적(㎡)",
             }
-            df_fl       = df_floor[list(fl_map.keys())].rename(columns=fl_map).copy()
+            fc      = {k: v for k, v in floor_col_map.items() if k in df_floor.columns}
+            df_fl   = df_floor[list(fc.keys())].rename(columns=fc).copy()
             df_fl.index = range(1, len(df_fl) + 1)
-            st.caption(f"총 {len(df_fl)}개 층 데이터")
+            st.caption(f"총 {len(df_fl)}개 층")
             st.dataframe(df_fl, use_container_width=True)
-
-        st.divider()
-        st.caption("※ 국토교통부 건축HUB API 기반 / 법적 효력 없음 / 공식 증명서는 정부24·세움터에서 발급")
