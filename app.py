@@ -192,6 +192,7 @@ def match_ho(target, ho_nm):
     return False
 
 
+# ★ 핵심 수정: 실제 누적 수집건수 기준으로 페이지 종료 판단
 def fetch_bld_api(endpoint, sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=50):
     all_items = []
     for page in range(1, max_pages + 1):
@@ -222,7 +223,9 @@ def fetch_bld_api(endpoint, sgg_cd, bjdong_cd, plat_gb, bun, ji, max_pages=50):
         if not items:
             break
         all_items.extend(items)
-        if page * 1000 >= int(body.get("totalCount", 0)):
+        total_count = int(body.get("totalCount", 0))
+        # ★ 수정: page * 1000 대신 실제 누적 건수로 비교
+        if len(all_items) >= total_count:
             break
     return all_items
 
@@ -411,24 +414,23 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
             return pd.DataFrame(), pd.DataFrame()
 
         df = df_src.copy()
-        df["dongNm"]    = df.apply(lambda r: restore(r, "dongNm"), axis=1)
-        df["bldNm"]     = df.apply(lambda r: restore(r, "bldNm"),  axis=1)
+        df["dongNm"]     = df.apply(lambda r: restore(r, "dongNm"), axis=1)
+        df["bldNm"]      = df.apply(lambda r: restore(r, "bldNm"),  axis=1)
         df["_jibun_key"] = df.apply(row_jibun_key, axis=1)
 
         df_ho = df[df.apply(lambda r: match_ho(target_ho, r.get("hoNm", "")), axis=1)]
 
         expos_debug_log.append({
-            "단계":      f"{source_label} hoNm필터",
-            "건수":      len(df_ho),
-            "hoNm샘플":  df_ho["hoNm"].tolist()[:5]  if not df_ho.empty else [],
-            "dongNm샘플": df_ho["dongNm"].tolist()[:5] if not df_ho.empty else [],
-            "jibun샘플": [str(x) for x in df_ho["_jibun_key"].tolist()[:5]] if not df_ho.empty else [],
+            "단계":       f"{source_label} hoNm필터",
+            "건수":       len(df_ho),
+            "hoNm샘플":   df_ho["hoNm"].tolist()[:5]   if not df_ho.empty else [],
+            "dongNm샘플": df_ho["dongNm"].tolist()[:5]  if not df_ho.empty else [],
+            "jibun샘플":  [str(x) for x in df_ho["_jibun_key"].tolist()[:5]] if not df_ho.empty else [],
         })
 
         if df_ho.empty:
             return pd.DataFrame(), pd.DataFrame()
 
-        # 동 입력 없으면 바로 반환
         if not target_dong:
             df_ho = df_ho.drop(columns=["_jibun_key"], errors="ignore")
             if "area" not in df_ho.columns:
@@ -455,11 +457,11 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
         # 2단계: 지번 일치 (CONFLICT)
         df_exact = df_ho[df_ho["_jibun_key"].isin(target_exact_jibun)] if target_exact_jibun else pd.DataFrame()
         expos_debug_log.append({
-            "단계":          f"{source_label} exact_jibun필터",
-            "건수":          len(df_exact),
+            "단계":            f"{source_label} exact_jibun필터",
+            "건수":            len(df_exact),
             "exact_jibun목록": [str(x) for x in list(target_exact_jibun)[:5]],
-            "dongNm샘플":    df_exact["dongNm"].tolist()[:5] if not df_exact.empty else [],
-            "jibun샘플":     [str(x) for x in df_exact["_jibun_key"].tolist()[:5]] if not df_exact.empty else [],
+            "dongNm샘플":      df_exact["dongNm"].tolist()[:5] if not df_exact.empty else [],
+            "jibun샘플":       [str(x) for x in df_exact["_jibun_key"].tolist()[:5]] if not df_exact.empty else [],
         })
         if not df_exact.empty:
             df_exact = df_exact.drop(columns=["_jibun_key"], errors="ignore")
@@ -485,8 +487,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 is_missing_area = True
             return df_dong, pd.DataFrame()
 
-        # ★ 핵심 수정: 호수는 맞는데 동 매칭이 전부 실패한 경우
-        # → 동명 불일치 CONFLICT로 반환 (버리지 않음)
+        # 호수는 맞지만 동명 매칭 실패 → CONFLICT
         api_dong = df_ho["dongNm"].iloc[0] if "dongNm" in df_ho.columns and not df_ho.empty else "?"
         expos_debug_log.append({
             "판정": "CONFLICT",
@@ -565,8 +566,8 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                     expos_debug_log.append({"최종결과": "NONE"})
 
     status.info("🪜 층별개요 수집 중...")
-    df_floor     = pd.DataFrame()
-    floor_order  = sorted(all_jibun, key=lambda j: 0 if j in target_exact_jibun else 1)
+    df_floor    = pd.DataFrame()
+    floor_order = sorted(all_jibun, key=lambda j: 0 if j in target_exact_jibun else 1)
 
     for (js, jb, jp, jbun, jji) in floor_order:
         if not df_floor.empty:
@@ -712,8 +713,8 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
                     area  = float(str(row[area_col]).replace(",", "").strip())
                     if area <= 0:
                         return ""
-                    pp       = int(price / (area / 3.3058))
-                    uk, man  = pp // 10000, pp % 10000
+                    pp      = int(price / (area / 3.3058))
+                    uk, man = pp // 10000, pp % 10000
                     if uk > 0:
                         return f"{uk}억 {man}만원" if man > 0 else f"{uk}억원"
                     return f"{pp}만원"
@@ -733,8 +734,8 @@ def get_real_estate_data(sigungu_code, start_month, end_month, dong_name, prop_t
         if pd.isna(v):
             return ""
         try:
-            p        = int(str(v).replace(",", "").strip())
-            uk, man  = p // 10000, p % 10000
+            p       = int(str(v).replace(",", "").strip())
+            uk, man = p // 10000, p % 10000
             if uk > 0:
                 return f"{uk}억 {man}만원" if man > 0 else f"{uk}억원"
             return f"{p}만원"
@@ -906,18 +907,18 @@ with tab2:
             st.markdown("### 📄 표제부 — 전체 동 목록")
 
             col_map = {
-                "bldNm":        "건물명",
-                "dongNm":       "동명칭",
-                "platPlc":      "대지위치",
-                "mainPurpsCdNm":"주용도",
-                "strctCdNm":    "주구조",
-                "grndFlrCnt":   "지상층",
-                "ugrndFlrCnt":  "지하층",
-                "heit":         "높이(m)",
-                "totArea":      "연면적(㎡)",
-                "hhldCnt":      "세대수",
-                "useAprDay":    "사용승인일",
-                "violBldYn":    "위반",
+                "bldNm":         "건물명",
+                "dongNm":        "동명칭",
+                "platPlc":       "대지위치",
+                "mainPurpsCdNm": "주용도",
+                "strctCdNm":     "주구조",
+                "grndFlrCnt":    "지상층",
+                "ugrndFlrCnt":   "지하층",
+                "heit":          "높이(m)",
+                "totArea":       "연면적(㎡)",
+                "hhldCnt":       "세대수",
+                "useAprDay":     "사용승인일",
+                "violBldYn":     "위반",
             }
             ex      = {k: v for k, v in col_map.items() if k in df_titles.columns}
             df_show = df_titles[list(ex.keys())].rename(columns=ex).copy()
