@@ -233,21 +233,13 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
         if valid:
             df_recap = pd.DataFrame(valid); break
 
-    # ─────────────────────────────────────────────────────
-    # STEP 3: 전유공용면적
-    #
-    # ★ 핵심 전략 (v13 확정):
-    #   모든 필지를 전부 조회 → 한 번에 합치기 → pk 필터 → hoNm 필터
-    #   지번별로 "찾으면 멈추는" 로직을 완전히 제거
-    #   → 어느 지번에 있든 반드시 찾아냄
-    # ─────────────────────────────────────────────────────
+       # STEP 3: 전유공용면적
     status.info("🏠 전유공용면적 수집 중...")
     df_expos        = pd.DataFrame()
     is_missing_area = False
     expos_debug_log = []
 
     if target_ho:
-        # 모든 필지에서 전유공용면적 전부 수집
         all_expos_raw = []
         for (js, jb, jp, jbun, jji) in all_jibun:
             for p_gb in ([jp] + [x for x in plat_cands if x != jp]):
@@ -260,12 +252,11 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                         "pk샘플":   [x.get("mgmBldrgstPk","") for x in items[:3]],
                     })
                     all_expos_raw.extend(items)
-                    break  # 해당 필지에서 데이터 나오면 다음 필지로
+                    break
 
         if not all_expos_raw:
             expos_debug_log.append({"결과": "전체 필지 조회 결과 0건"})
         else:
-            # 중복 제거
             seen_e, unique_expos = set(), []
             for item in all_expos_raw:
                 key = (item.get("mgmBldrgstPk"), item.get("hoNm"), item.get("exposPubuseGbCdNm"))
@@ -281,7 +272,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 "target_pks": list(target_pks),
             })
 
-            # ① pk 필터 (target_pks 있으면 해당 동만)
+            # ① pk 필터 (표제부 pk와 일치하면 우선 사용)
             if target_pks and "mgmBldrgstPk" in df_all.columns:
                 df_pk = df_all[df_all["mgmBldrgstPk"].isin(target_pks)]
                 if not df_pk.empty:
@@ -295,12 +286,35 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
             expos_debug_log.append({
                 "hoNm필터후": len(df_ho),
                 "매칭된hoNm": df_ho["hoNm"].tolist()[:5] if not df_ho.empty else [],
+                "매칭된dongNm": df_ho["dongNm"].tolist()[:5] if not df_ho.empty else [],
             })
+
+            # ③ ★ 동 필터 (target_dong이 있을 때 반드시 검증)
+            if target_dong and not df_ho.empty:
+                # 1순위: dongNm이 target_dong과 일치하는 것
+                df_match = df_ho[df_ho.apply(
+                    lambda r: match_dong(target_dong, r.get("dongNm",""), r.get("bldNm","")), axis=1
+                )]
+                if not df_match.empty:
+                    df_ho = df_match
+                    expos_debug_log.append({"동필터": "dongNm 일치", "건수": len(df_ho)})
+                else:
+                    # 2순위: 명백히 다른 동(상가, 다른 동번호 등)은 제거
+                    before = len(df_ho)
+                    df_ho = df_ho[~df_ho.apply(
+                        lambda r: is_different_dong(target_dong, r.get("dongNm",""), r.get("bldNm","")), axis=1
+                    )]
+                    expos_debug_log.append({
+                        "동필터": "is_different_dong 제거",
+                        "필터전": before,
+                        "필터후": len(df_ho),
+                    })
 
             if not df_ho.empty:
                 df_expos = df_ho.copy()
                 if "area" not in df_expos.columns:
                     df_expos["area"] = "0"; is_missing_area = True
+
 
     # STEP 4: 층별개요
     status.info("🪜 층별개요 수집 중...")
