@@ -1,5 +1,6 @@
 # ============================================================
-# 부동산 올인원 봇 v13 (최종)
+# 부동산 올인원 봇 v14 — 최종 완성본
+# 실거래가 + 건축물대장 (전유공용면적 동/호 정확 조회)
 # ============================================================
 import streamlit as st
 import pandas as pd
@@ -108,6 +109,14 @@ def match_dong(target, dong_nm, bld_nm):
         if f"{n}동" in b: return True
     return False
 
+def is_different_dong(target, dong_nm, bld_nm):
+    """dongNm/bldNm 값이 있는데 target과 명백히 다르면 True"""
+    if not target: return False
+    d = str(dong_nm).strip()
+    b = str(bld_nm).strip()
+    if d in ("","None","nan") and b in ("","None","nan"): return False
+    return not match_dong(target, dong_nm, bld_nm)
+
 def match_ho(target, ho_nm):
     if not target: return True
     t = re.sub(r"[^A-Za-z0-9가-힣]","",str(target)).replace("호","").replace("제","").upper()
@@ -176,11 +185,11 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 return pk_map[pk].get("dong" if key=="dongNm" else "bld","")
         return v
 
-    # STEP 0: 부속지번
+    # STEP 0: 부속지번 수집
     status.info("🗺️ 단지 필지 구성 파악 중...")
     all_jibun = get_all_jibun(sgg_cd, bjdong_cd, plat_gb, bun, ji)
 
-    # STEP 1: 표제부
+    # STEP 1: 표제부 수집
     status.info("📋 표제부 수집 중...")
     raw_titles = []
     for (js, jb, jp, jbun, jji) in all_jibun:
@@ -201,7 +210,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
         if pk:
             pk_map[pk] = {"dong": item.get("dongNm",""), "bld": item.get("bldNm","")}
 
-    # 동 필터 PK 세트
+    # 표제부에서 target_dong의 pk 세트 추출
     target_pks = set()
     if target_dong and not df_titles.empty:
         for _, row in df_titles.iterrows():
@@ -209,7 +218,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 pk = row.get("mgmBldrgstPk")
                 if pk: target_pks.add(pk)
 
-    # 표제부 platPlc → 타겟 동 실제 지번
+    # 표제부 platPlc에서 target_dong 실제 지번 추출
     target_exact_jibun = []
     if not df_titles.empty:
         seen_j = set()
@@ -224,7 +233,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                         seen_j.add(key); target_exact_jibun.append(key)
                     break
 
-    # STEP 2: 총괄표제부
+    # STEP 2: 총괄표제부 수집
     status.info("🏢 총괄표제부 수집 중...")
     df_recap = pd.DataFrame()
     for p_gb in ["0","2","3","1"]:
@@ -233,13 +242,22 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
         if valid:
             df_recap = pd.DataFrame(valid); break
 
-       # STEP 3: 전유공용면적
+    # ─────────────────────────────────────────────────────
+    # STEP 3: 전유공용면적
+    #
+    # 전략:
+    # 1. 모든 필지에서 전유공용면적 전부 수집 (멈추지 않음)
+    # 2. pk 필터 → target_dong의 pk와 일치하는 것 우선
+    # 3. hoNm 필터 → 호수 매칭 (302 == 0302 정수비교)
+    # 4. dongNm 필터 → 상가 등 명백히 다른 동 제거
+    # ─────────────────────────────────────────────────────
     status.info("🏠 전유공용면적 수집 중...")
     df_expos        = pd.DataFrame()
     is_missing_area = False
     expos_debug_log = []
 
     if target_ho:
+        # 모든 필지 전부 수집
         all_expos_raw = []
         for (js, jb, jp, jbun, jji) in all_jibun:
             for p_gb in ([jp] + [x for x in plat_cands if x != jp]):
@@ -252,11 +270,12 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                         "pk샘플":   [x.get("mgmBldrgstPk","") for x in items[:3]],
                     })
                     all_expos_raw.extend(items)
-                    break
+                    break  # 해당 필지에서 데이터 나오면 다음 필지로
 
         if not all_expos_raw:
             expos_debug_log.append({"결과": "전체 필지 조회 결과 0건"})
         else:
+            # 중복 제거
             seen_e, unique_expos = set(), []
             for item in all_expos_raw:
                 key = (item.get("mgmBldrgstPk"), item.get("hoNm"), item.get("exposPubuseGbCdNm"))
@@ -272,7 +291,7 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                 "target_pks": list(target_pks),
             })
 
-            # ① pk 필터 (표제부 pk와 일치하면 우선 사용)
+            # ① pk 필터
             if target_pks and "mgmBldrgstPk" in df_all.columns:
                 df_pk = df_all[df_all["mgmBldrgstPk"].isin(target_pks)]
                 if not df_pk.empty:
@@ -285,13 +304,12 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
             df_ho = df_all[df_all.apply(lambda r: match_ho(target_ho, r.get("hoNm","")), axis=1)]
             expos_debug_log.append({
                 "hoNm필터후": len(df_ho),
-                "매칭된hoNm": df_ho["hoNm"].tolist()[:5] if not df_ho.empty else [],
+                "매칭된hoNm":   df_ho["hoNm"].tolist()[:5]   if not df_ho.empty else [],
                 "매칭된dongNm": df_ho["dongNm"].tolist()[:5] if not df_ho.empty else [],
             })
 
-            # ③ ★ 동 필터 (target_dong이 있을 때 반드시 검증)
+            # ③ dongNm 필터 (target_dong이 있을 때 반드시 검증)
             if target_dong and not df_ho.empty:
-                # 1순위: dongNm이 target_dong과 일치하는 것
                 df_match = df_ho[df_ho.apply(
                     lambda r: match_dong(target_dong, r.get("dongNm",""), r.get("bldNm","")), axis=1
                 )]
@@ -299,22 +317,19 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                     df_ho = df_match
                     expos_debug_log.append({"동필터": "dongNm 일치", "건수": len(df_ho)})
                 else:
-                    # 2순위: 명백히 다른 동(상가, 다른 동번호 등)은 제거
                     before = len(df_ho)
                     df_ho = df_ho[~df_ho.apply(
                         lambda r: is_different_dong(target_dong, r.get("dongNm",""), r.get("bldNm","")), axis=1
                     )]
                     expos_debug_log.append({
                         "동필터": "is_different_dong 제거",
-                        "필터전": before,
-                        "필터후": len(df_ho),
+                        "필터전": before, "필터후": len(df_ho),
                     })
 
             if not df_ho.empty:
                 df_expos = df_ho.copy()
                 if "area" not in df_expos.columns:
                     df_expos["area"] = "0"; is_missing_area = True
-
 
     # STEP 4: 층별개요
     status.info("🪜 층별개요 수집 중...")
@@ -467,6 +482,7 @@ st.title("🏢 부동산 올인원 실거래가 & 건축물대장 봇")
 
 tab1, tab2 = st.tabs(["💰 실거래가 조회","📋 건축물대장 조회"])
 
+# ════ 탭1: 실거래가 ══════════════════════════════════════════
 with tab1:
     now = pd.Timestamp.now()
     with st.form("form_trade"):
@@ -495,6 +511,7 @@ with tab1:
                     st.download_button("📥 엑셀 다운로드", buf.getvalue(), "실거래가.xlsx")
             else: st.error("지역을 찾을 수 없습니다.")
 
+# ════ 탭2: 건축물대장 ════════════════════════════════════════
 with tab2:
     st.subheader("📋 건축물대장 종합 조회")
     st.caption("💡 아파트·오피스텔·도시형생활주택·다세대 지원 | 외필지·단동 자동 처리")
@@ -520,9 +537,11 @@ with tab2:
             sgg_cd, bjdong_cd, plat_gb, bun, ji, dong_in, ho_in
         )
 
-        with st.expander("🔍 디버그 정보", expanded=False):
+        # 디버그
+        with st.expander("🔍 디버그 정보 (조회 안 될 때 확인)", expanded=False):
             st.write(f"**탐색 필지 수:** {jibun_cnt}개")
             if exact_jibun:
+                st.write("**target_dong 실제 지번:**")
                 for j in exact_jibun:
                     st.code(f"sigunguCd={j[0]}, bjdongCd={j[1]}, platGbCd={j[2]}, bun={j[3]}, ji={j[4]}")
             if not df_titles.empty and dong_in:
@@ -544,8 +563,9 @@ with tab2:
         viol_src = pd.concat([df for df in [df_recap,df_titles] if not df.empty], ignore_index=True)
         if "violBldYn" in viol_src.columns:
             if viol_src["violBldYn"].astype(str).str.contains("1").any():
-                st.error("🚨 [주의] 위반건축물 대장입니다!")
+                st.error("🚨 [주의] 위반건축물 대장입니다! 정부24 원본 서류를 반드시 확인하세요.")
 
+        # ── A: 총괄표제부
         if not df_recap.empty:
             r = df_recap.iloc[0]
             st.markdown("---")
@@ -575,6 +595,7 @@ with tab2:
 | 에너지효율등급 | {safe_val(r.get('engrGrade'))} |
                 """)
 
+        # ── B: 표제부
         if not df_titles.empty:
             st.markdown("---")
             st.markdown("### 📄 표제부 — 전체 동 목록")
@@ -663,6 +684,7 @@ with tab2:
 | 지능형건축물등급 | {safe_val(dr.get('itgBldGrade'))} |
                     """)
 
+        # ── C: 전유공용면적
         if ho_in:
             st.markdown("---")
             dong_label = (dong_in+"동 ") if dong_in else ""
@@ -671,7 +693,7 @@ with tab2:
                 st.warning(
                     "⚠️ 전유공용면적 데이터를 찾을 수 없습니다.\n\n"
                     "- 집합건물(아파트·오피스텔·도시형생활주택·다세대)만 지원\n"
-                    "- 위 디버그 정보를 열어 STEP 3 로그 확인"
+                    "- 위 디버그 정보를 열어 STEP 3 로그를 확인하세요"
                 )
             else:
                 pks = df_expos["mgmBldrgstPk"].unique() if "mgmBldrgstPk" in df_expos.columns else [None]
@@ -722,6 +744,7 @@ with tab2:
                                 dc.columns = ["전유/공용","용도","면적(㎡)"]
                                 st.dataframe(dc, use_container_width=True)
 
+        # ── D: 층별개요
         st.markdown("---")
         dong_label = ("  —  "+dong_in+"동") if dong_in else ""
         st.markdown(f"### 🪜 층별개요{dong_label}")
