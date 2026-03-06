@@ -256,11 +256,12 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
     is_missing_area = False
     expos_debug_log = []
 
-    if target_ho:
-        # 모든 필지 전부 수집
+        if target_ho:
         all_expos_raw = []
         for (js, jb, jp, jbun, jji) in all_jibun:
-            for p_gb in ([jp] + [x for x in plat_cands if x != jp]):
+            # ★ break 없이 모든 platGb 전부 수집
+            # ★ 집합건물용 2,3을 먼저 시도
+            for p_gb in ["2", "3", "0"]:
                 items = fetch_bld_api(URL_EXPOS, js, jb, p_gb, jbun, jji, max_pages=20)
                 if items:
                     expos_debug_log.append({
@@ -270,7 +271,8 @@ def get_building_ledger(sgg_cd, bjdong_cd, plat_gb, bun, ji, target_dong="", tar
                         "pk샘플":   [x.get("mgmBldrgstPk","") for x in items[:3]],
                     })
                     all_expos_raw.extend(items)
-                    break  # 해당 필지에서 데이터 나오면 다음 필지로
+                    # ★ break 없음 → 같은 지번의 모든 platGb 수집
+
 
         if not all_expos_raw:
             expos_debug_log.append({"결과": "전체 필지 조회 결과 0건"})
